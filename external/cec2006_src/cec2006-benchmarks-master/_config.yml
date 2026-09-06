@@ -1,0 +1,38 @@
+title: "CEC 2006 Constrained Benchmarks"
+description: "Reference implementations and documentation for the CEC 2006 constrained optimization benchmarks (g01-g24)"
+theme: minima
+lang: en
+markdown: kramdown
+highlighter: rouge
+plugins:
+  - jekyll-feed
+  - jekyll-sitemap
+
+collections:
+  problems:
+    output: true
+    permalink: /problems/:name/
+
+defaults:
+  - scope:
+      path: ""
+      type: "problems"
+    values:
+      layout: "page"
+  - scope:
+      path: ""
+      type: "pages"
+    values:
+      layout: "default"
+
+include:
+  - _pages
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor/
+  - .bundle/
+  - .sass-cache/
+  - .jekyll-cache/
+  - gemfiles/

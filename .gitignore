@@ -1,0 +1,23 @@
+# Output dei run (log deterministici) — non versionare i risultati
+results/*
+!results/.gitkeep
+
+# File temporanei Octave/MATLAB
+*.asv
+*.autosave
+octave-workspace
+octave-workspace_*
+*.mat~
+
+# Artefatti diagnostici dei run reali (real_case/): log ed eval-log
+# generati durante l'ottimizzazione, non sorgente -- rif. CLAUDE.md S11
+# Fase 5. Le csv_log per-eval possono arrivare a decine di MB.
+real_case/eval_log*.csv
+real_case/run_*.log
+real_case/*.pid
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+.*.swp

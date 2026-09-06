@@ -1,0 +1,11 @@
+idx name unit x0 lb ub overwrites note
+1 zkick m 120 20 180 other.GUI.zkick nessuna
+2 pitch_over_starting s 10 5 40 other.GUI.pitch_over_starting "Durata pitch over"
+3 pitch_c1 deg_s2 -1 -2.5 -0.2 other.GUI.pitch(1) nessuna
+4 pitch_c2 deg_s2 0 -1 0 other.GUI.pitch(2) nessuna
+5 transition_starting s 30 5 60 other.GUI.transition_starting SOSPETTO_causa_stallo_ODE_a_ub=45_meccanismo_non_ancora_confermato
+6 pitch_rate_transition deg_s 0 0 2.5 other.GUI.pitch_rate_transition nessuna
+7 insertion_starting s 200 5 300 other.GUI.insertion_starting nessuna
+8 AoA_rate deg_s 0 -5 5 other.GUI.AoA_rate nessuna
+9 plane_controller_kp - 0.5 0.25 0.75 other.GUI.plane_controller(1) plane_controller_kd/ki_NON_sono_variabili_di_design_(rimangono_fissi_al_nominale_0.1/0.01,_decisione_utente)
+10 Mpayload kg 4000 0 6000 other.MASS.Mpayload obiettivo_f=-Mpayload,_range_[0,6000]_esplicito_non_derivato_dal_nominale
