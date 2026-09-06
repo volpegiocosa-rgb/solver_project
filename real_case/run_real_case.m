@@ -37,10 +37,10 @@
     addpath(fullfile(here, '..', 'constraints'));
     addpath(fullfile(here, '..', 'io'));
     addpath(here);
-    addpath(fullfile(here, '..', '..', 'TSTO', 'source'), '-end');
-    addpath(fullfile(here, '..', '..', 'TSTO', 'source', 'native'), '-end');
+    addpath(fullfile(here, '..', 'TSTO', 'source'), '-end');
+    addpath(fullfile(here, '..', 'TSTO', 'source', 'native'), '-end');
 
-    tsto_input_dir = fullfile(here, '..', '..', 'TSTO', 'input', 'reference_LV');
+    tsto_input_dir = fullfile(here, '..', 'TSTO', 'input', 'reference_LV');
     other = interface(tsto_input_dir);
 
     % === variabili di design: x0/lb/ub letti da design_variables.csv

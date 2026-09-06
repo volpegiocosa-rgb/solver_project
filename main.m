@@ -24,11 +24,9 @@
 %     in quella cartella). Senza compilazione lo script funziona
 %     comunque ma ricade sulle funzioni Octave interpretate, ~150-400x
 %     piu' lento (il run da ore diventa un run da giorni).
-%   - Il repository TSTO (https://github.com/volpegiocosa-rgb/TSTO)
-%     clonato come cartella SORELLA di solver_project, cioe':
-%       job/
-%         solver_project/   <- questo repository
-%         TSTO/              <- https://github.com/volpegiocosa-rgb/TSTO
+%   - Nient'altro: TSTO e' incluso in questo repository (cartella TSTO/,
+%     vendorizzata via git subtree da https://github.com/volpegiocosa-rgb/TSTO)
+%     -- un singolo clone/download di questa release contiene tutto.
 %
 %   USO:
 %       octave main.m
@@ -47,13 +45,14 @@ addpath(fullfile(here, 'constraints'));
 addpath(fullfile(here, 'io'));
 addpath(fullfile(here, 'real_case'));
 
-% --- 2. TSTO: cartella sorella di solver_project (vedi PREREQUISITI) ---
-tsto_dir = fullfile(here, '..', 'TSTO');
+% --- 2. TSTO: inclusa in questo repository (vedi PREREQUISITI) ---
+tsto_dir = fullfile(here, 'TSTO');
 if ~isfolder(tsto_dir)
     error('main:noTsto', [ ...
         'Cartella TSTO non trovata in %s.\n' ...
-        'Clona https://github.com/volpegiocosa-rgb/TSTO come cartella ' ...
-        'SORELLA di solver_project (vedi header di questo file).'], tsto_dir);
+        'Questa cartella dovrebbe essere inclusa nel repository/release ' ...
+        '(vendorizzata da https://github.com/volpegiocosa-rgb/TSTO) -- ' ...
+        'verifica di aver scaricato il codice sorgente completo, non solo main.m.'], tsto_dir);
 end
 addpath(fullfile(tsto_dir, 'source'), '-end');
 addpath(fullfile(tsto_dir, 'source', 'native'), '-end');

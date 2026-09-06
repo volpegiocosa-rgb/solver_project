@@ -21,15 +21,12 @@ Motore CMA-ES (base `purecmaes.m`) + gestione vincoli **ARCH**. **Niente Augment
 
 `main.m` lancia l'ottimizzazione (massimizzazione payload) sul simulatore
 [TSTO](https://github.com/volpegiocosa-rgb/TSTO) (lanciatore a due stadi, propulsione
-liquida, Falcon-9-like).
+liquida, Falcon-9-like), **incluso in questo repository** (cartella `TSTO/`,
+vendorizzata via `git subtree`): un singolo clone o download di questa release
+contiene tutto il necessario, nessun altro repository da scaricare a parte.
 
 **Prerequisiti**:
-1. Clonare TSTO come cartella **sorella** di questo repository:
-   ```
-   job/
-     solver_project/   <- questo repository
-     TSTO/              <- git clone https://github.com/volpegiocosa-rgb/TSTO
-   ```
+1. Nessuno per i sorgenti: `git clone` (o "Download ZIP" dalla release) e sei pronto.
 2. (Consigliato, non obbligatorio) Compilare i kernel Fortran nativi per la simulazione
    (~150-400x più veloce delle funzioni Octave interpretate — vedi
    `TSTO/source/native/README.md`):
