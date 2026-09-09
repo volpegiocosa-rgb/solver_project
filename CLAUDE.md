@@ -1974,6 +1974,62 @@ Ancora aperti / da eseguire:
         validazione numerica dei tre `.mexw64`/`.mexa64` con lo stesso
         metodo (comparativo) di `validate_tsto_native.m`.
 
+      **AGGIORNAMENTO (2026-09-09): timing a freddo del fast-path Fortran
+      completo su un run di continuazione VERO (non solo il run "piatto"
+      gia' misurato), e pulizia magic-number sui settings di
+      `run_continuation.m` (richiesta utente: "verifica nel codice non
+      ci siamo magic Number. raccogli i settings dell'ottimizzatore in
+      un file CSV che sta insieme agli altri").**
+
+      - **Timing**: `run_continuation()` a freddo (stesso `warm_start.mat`
+        messo temporaneamente da parte, poi ripristinato -- nessuno
+        stato tracciato alterato), stessa configurazione ufficiale
+        RELEASE 2.0.0. Risultato reale (non stimato): **131.2 s per
+        15066 valutazioni = 8.7 ms/eval**, nessun avviso di fast-path
+        mancante nel log (`tsto_phases16_native` attivo per l'intero
+        run) -- **~9.3x** piu' veloce del run RELEASE 2.0.0 (~81 ms/eval
+        stimato per analogia, kernel nativi soli, RK5/eventi ancora
+        interpretati). Il run si e' fermato dopo 6/8 stadi per
+        `patience` esaurita (3 stadi consecutivi sotto `min_gain`, stop
+        per design, non un errore), raggiungendo 24446.6 kg feasible
+        (vs 24655.3 kg ufficiale, scarto ~0.8%, rumore normale da
+        `vary_seed`). Estrapolato allo stesso budget (~20075 eval):
+        **~175 s**, sotto i 3 minuti -- il requisito dei 5 minuti
+        (abbandonato in una sessione precedente) torna potenzialmente
+        alla portata, non riaperto in questa sessione (decisione
+        dell'utente, non presa qui).
+      - **Magic number**: verificato con grep mirato che `/core`,
+        `/constraints`, `/io` non assegnano mai `n`/`n_eq`/`n_ineq` a un
+        valore letterale (regola vincolante S1) -- nessuna violazione
+        trovata. La vera batteria di costanti cablate era
+        `local_defaults()` in `real_case/run_continuation.m` (22 campi:
+        `dataset`, `n_stage`, `stage_eval`, `sigma0_warm`, `patience`,
+        `min_gain`, ecc., con il razionale misurato nei commenti
+        inline). Estratti in **`real_case/optimizer_settings.csv`**
+        (nuovo, colonne `name value unit note`, stesso stile di
+        `design_variables.csv`), con `local_defaults()` ridotta a un
+        loader (`local_read_settings_csv` + `local_parse_setting`,
+        conversione esplicita per campo -- non generica: un typo nel
+        CSV da' un errore leggibile, non un `NaN` silenzioso). Rationale
+        completo di ogni valore: versione compatta nella colonna `note`
+        del CSV, versione estesa gia' nella cronologia sopra (sessioni
+        "continuazione sul payload"/"procedura di continuazione"/
+        "RELEASE 2.0.0") -- non duplicata.
+      - **Verificato ESEGUENDO** (non solo per ispezione): smoke test
+        con `run_continuation(struct('n_stage',1,'stage_eval',50,
+        'max_restarts',0))` (budget minimo, warm_start.mat rimesso a
+        posto dopo) -- log conferma `lb`/`x0` calcolati correttamente da
+        `back_off`/`x0_retreat` letti dal CSV, soglia `min_gain (100)`
+        nel messaggio di stop, `dataset` string e `ratio_guess=auto`
+        risolti correttamente. Nessuna regressione: stesso comportamento
+        del vecchio struct cablato.
+      - **Non toccato**: `run_real_case.m` (script piu' semplice, i suoi
+        `opts` sono per lo piu' derivati dalla fisica di missione --
+        `tol_con` = 3% del target -- o gia' documentati con derivazione
+        esplicita -- `max_eval` -- non una batteria di costanti di
+        tuning cablate come `local_defaults()`; non e' quello a cui si
+        riferiva la richiesta). `design_variables.csv` invariato.
+
 - [x] Dimensione di calibrazione benchmark: usata n=25 per sphere (proposta
       originale), n=5 per g13 (dimensione nativa del problema, non scelta),
       n=2 per rosenbrock vincolata (dimensione nativa della formulazione

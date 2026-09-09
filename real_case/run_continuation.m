@@ -8,6 +8,12 @@ function out = run_continuation(user_opt)
 %   out = run_continuation(struct('stage_eval', [1500 2000 3000 5000], ...
 %                                 'max_restarts', 1));
 %
+% Default letti da real_case/optimizer_settings.csv (nessun magic number
+% nel codice: stesso principio gia' in uso per x0/lb/ub in
+% design_variables.csv, rif. local_defaults() sotto). 'user_opt' resta il
+% modo per override AD-HOC di una singola run; il CSV e' la sorgente di
+% verita' persistente.
+%
 % ---------------------------------------------------------------------------
 % IDEA (proposta utente, validata sperimentalmente prima di essere scritta)
 % ---------------------------------------------------------------------------
@@ -359,86 +365,70 @@ end
 function d = local_defaults()
     % Default PROVVISORI: derivano da un solo run misurato (seed 1) su
     % validation_test_2, non da una calibrazione multi-seed (rif. S6.1).
+    % Letti da real_case/optimizer_settings.csv (no magic number nel
+    % codice, rif. CLAUDE.md S1 principio di genericita': lo stesso
+    % principio gia' applicato a x0/lb/ub in design_variables.csv esteso
+    % qui ai settings dell'ottimizzatore). Il razionale/le misure dietro
+    % ogni valore restano nella colonna 'note' del CSV (versione
+    % compatta) e nella cronologia di CLAUDE.md S11 Fase 5 (versione
+    % estesa, sessioni "continuazione sul payload"/"procedura di
+    % continuazione"/"RELEASE 2.0.0").
+    here = fileparts(mfilename('fullpath'));
+    d = local_read_settings_csv(fullfile(here, 'optimizer_settings.csv'));
+end
+
+
+function d = local_read_settings_csv(csv_path)
+    fid = fopen(csv_path, 'r');
+    if fid < 0
+        error('run_continuation:noSettingsCsv', 'Impossibile aprire %s.', csv_path);
+    end
+    fgetl(fid);   % scarta la riga di intestazione
     d = struct();
-    d.dataset      = 'validation_test_2';
-    d.n_design     = 10;
-    d.i_payload    = 10;
-    d.seed         = 1;
-    d.vary_seed    = true;   % seed = seed + (stadio-1). NECESSARIO: uno stadio
-                             % a vuoto ri-tentato con lo STESSO seed, stesso x0
-                             % e stesso lb rigioca la ricerca identica, solo piu'
-                             % a lungo -- e il rendimento del budget per stadio
-                             % satura (misurato: 3000 e 6000 valutazioni danno
-                             % lo stesso identico risultato). Variare il seed e'
-                             % cio' che rende un ri-tentativo un vero
-                             % ri-tentativo. false = riproducibilita' stretta.
-    d.verbose      = 1;
-    % --- controlli richiesti dall'utente ---
-    d.n_stage      = 8;                          % stadi di continuazione
-    d.stage_eval   = 2500;                       % budget per stadio. COSTANTE e
-                                                 % basso di proposito: misurato
-                                                 % che il rendimento del budget
-                                                 % per stadio satura quasi subito
-                                                 % (3000, 6000 e 10000 eval danno
-                                                 % lo STESSO risultato a lb/x0/
-                                                 % seed invariati). Meglio molti
-                                                 % stadi corti che pochi lunghi:
-                                                 % ogni stadio porta un ratchet,
-                                                 % un push e (con vary_seed) una
-                                                 % ricerca nuova"
-    d.stage_iter   = Inf;                        % Inf = default di parse_opts
-    d.max_restarts = 3;                          % restart IPOP per stadio.
-                                                 % MISURATO: gli stadi che
-                                                 % riescono fanno sempre >=1
-                                                 % restart (il restart ri-semina
-                                                 % xmean da Sobol ed e' cio' che
-                                                 % permette di staccarsi dal
-                                                 % vincolo attivo); con
-                                                 % max_restarts=1 e budget corto
-                                                 % uno stadio ne ha fatti 0 e ha
-                                                 % dato 0 punti feasible.
-    % --- passo e fetta (da leggere insieme, vedi header) ---
-    d.sigma0_cold  = 0.3;
-    d.sigma0_warm  = 0.03;
-    d.explore_every = 2;     % ogni N-esimo stadio e' ESPLORATIVO: passo
-                             % sigma0_cold e restart Sobol globale, invece di
-                             % passo fine e restart caldo.
-                             % MOTIVO (misurato): su questo problema il
-                             % landscape della guida e' multimodale e i salti
-                             % grossi di payload sono arrivati SOLO da
-                             % re-seeding globali fortunati (23707 kg contro il
-                             % plateau ~17000 kg delle corse tutte-calde). Il
-                             % ratchet su lb rende quell'esplorazione SENZA
-                             % RISCHIO: uno stadio esplorativo che fallisce
-                             % spreca budget ma non puo' perdere il payload
-                             % gia' certificato. 0 = mai esplorare.
-    d.back_off     = 1000;
-    % --- predittore in massa ---
-    d.ratio_guess  = [];     % r iniziale [kg payload / kg propellente].
-                             % [] = calcolato da TSIOLKOVSKY sul punto stesso
-                             % (nessun numero scelto a mano; vedi header per
-                             % il confronto misurato con la pendenza reale).
-                             % Un valore numerico lo forza.
-    d.ratio_safety = 1.0;    % <1 restringe il bracket (piu' prudente)
-    d.push_max     = 3;      % passi di predizione per punto
-    d.bisect_tol   = 50;     % [kg] risoluzione finale sul muro
-    d.bisect_max   = 8;
-    d.min_gain     = 100;    % [kg]
-    d.patience     = 3;      % stadi consecutivi SENZA guadagno tollerati prima
-                             % di fermarsi. MISURATO: con budget corti uno
-                             % stadio puo' non battere il best e il run si
-                             % chiuderebbe subito, mentre lo stadio successivo
-                             % (budget maggiore) guadagna ancora.
-    d.x0_retreat   = 500;    % [kg] di quanto il PUNTO DI PARTENZA di uno
-                             % stadio viene arretrato sotto il muro
-                             % certificato. Necessario (misurato): il push
-                             % lascia il punto ESATTAMENTE sul muro, dove ogni
-                             % perturbazione della guida e' infeasible e
-                             % l'obiettivo punta fuori dalla regione
-                             % ammissibile -- la peggiore condizione iniziale
-                             % per CMA-ES. Il punto certificato (riportato in
-                             % out.x) resta quello sul muro: si arretra SOLO
-                             % il warm start.
+    while true
+        line = fgetl(fid);
+        if ~ischar(line)
+            break;
+        end
+        line = strtrim(line);
+        if isempty(line)
+            continue;
+        end
+        tok = strsplit(line);
+        if numel(tok) < 3
+            fclose(fid);
+            error('run_continuation:badSettingsCsv', ...
+                  '%s: riga malformata (attesi almeno 3 campi name/value/unit): %s', ...
+                  csv_path, line);
+        end
+        name = tok{1};
+        d.(name) = local_parse_setting(name, tok{2});
+    end
+    fclose(fid);
+end
+
+
+function v = local_parse_setting(name, raw)
+    % Conversione esplicita per campo (niente inferenza generica di tipo:
+    % un typo nel CSV deve dare un errore leggibile, non un NaN silenzioso).
+    switch name
+        case 'dataset'
+            v = raw;
+        case 'vary_seed'
+            v = ~(strcmp(raw, '0') || strcmpi(raw, 'false'));
+        case 'ratio_guess'
+            if strcmpi(raw, 'auto')
+                v = [];
+            else
+                v = str2double(raw);
+            end
+        otherwise
+            v = str2double(raw);
+            if isnan(v)
+                error('run_continuation:badSetting', ...
+                      'optimizer_settings.csv: valore non numerico per %s: %s', name, raw);
+            end
+    end
 end
 
 
