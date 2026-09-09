@@ -80,6 +80,14 @@ trattati come **parametri**, mai cablati (`hardcoded`). Regole:
     dell'intera popolazione (repair + ranking aggregation). `purecmaes.m` espone questo passo
     in chiaro; `cmaes.m` completo ordina uno scalare per-individuo e non è adatto a ARCH.
 
+### Vincoli operativi vincolanti (decisioni utente, non negoziabili)
+- **Parallelizzazione VIETATA.** Non proporre, non progettare e non implementare
+  alcuna forma di calcolo parallelo (né sulla popolazione CMA-ES, né sulle fasi di
+  simulazione, né multi-processo/multi-thread/GPU). Vale come leva di performance e
+  come suggerimento: **non va nemmeno menzionata** fra le opzioni. Ogni guadagno di
+  velocità va cercato altrove (costo per valutazione, numero di valutazioni,
+  strategia di ricerca, budget di restart).
+
 ### Regole di compatibilità Octave/MATLAB (rispettare sempre)
 - Commenti con `%`, **mai** `#`.
 - Chiusura blocchi con `end`, **mai** `endfunction` / `endif` / `endfor` / `endwhile`.
@@ -1352,6 +1360,433 @@ Ancora aperti / da eseguire:
       punto feasible raro, non necessariamente un ottimizzatore diverso).
       **Nessuna decisione presa**: sottoposta esplicitamente all'utente,
       sessione ancora aperta su questo punto.
+
+      **AGGIORNAMENTO (2026-09-09, sessione "debug-solver"): trovata la CAUSA
+      VERA del "non trova mai una regione feasible e incolla al bound la
+      variabile dell'obiettivo", ed era un BUG, non una proprieta' del
+      problema. Diagnosi completa e numeri in `real_case/diagnostic_plan.md`
+      (piano approvato dall'utente, T1/T2 eseguiti).**
+
+      Premessa non prevista: `TSTO/source/native/*.oct` NON sono versionati
+      (rif. native/README.md) e in questo checkout non esistevano -> tutto
+      girava sul fallback interpretato, **8.4 s/eval invece di 0.1 s**.
+      Ricompilati in sessione con `mkoctfile`. Ogni cronometraggio fatto dopo
+      la vendorizzazione di TSTO e' da rifare.
+
+      - **T1 (sweep 1-D del payload, guida al nominale)**: feasible da 0 a
+        15000 kg, non feasible da 20000 -> il tetto fisico e' ~2.5-3x sopra
+        `ub=6000`. Quindi l'ipotesi "caso test non fattibile" e' SMENTITA e
+        arrivare a `ub` e' la risposta CORRETTA per questo box (l'ottimo lo
+        decide il box, non la fisica). Trovato anche il perche' i residui
+        sono ~1e-9: `simulator.m` fasi 7-8 (`injection_target_orbit.m`)
+        centrano il target PER COSTRUZIONE saturando sul propellente, quindi
+        `ceq` e' quasi binaria (~1e-9 su tutto l'ammissibile, ordini di
+        grandezza fuori) -- l'insieme ammissibile e' una REGIONE, non una
+        varieta' di codimensione 3, e dentro non c'e' gradiente utile. E'
+        anche il motivo del `sqp: QP subproblem is infeasible` del polish.
+      - **T2 (frazione in banda per generazione, ri-valutando i candidati
+        loggati del run da 12000 eval)**: ipotesi "banda eps troppo larga ->
+        ranking degenere sul solo f" **FALSIFICATA** (in-band 0% in tutte le
+        49 generazioni campionate: `eps_horizon`/`K0` non erano la causa).
+        Trovata invece la causa vera: dalla generazione ~76 i residui del
+        best sono COSTANTI a 3 cifre e la popolazione degenera (righe
+        distinte per generazione: 10 -> 5 -> **1**), con **9 componenti su 10
+        incollate al proprio lb/ub**. Meccanismo: `cmaes_ask.m` campiona
+        senza bound handling (gap dichiarato in Fase 2) -> la media esce da
+        `[0,1]^n` -> il clip aggiunto in Fase 5 in `real_case/traj_cost.m`
+        riporta TUTTI i candidati sullo stesso bordo -> f e vincoli identici
+        -> ranking tutto pareggi -> nessun segnale di selezione. Il clip,
+        introdotto per curare l'hang di `ode45`, era diventato il meccanismo
+        che uccideva la ricerca (prima di `rk5.m` il sintomo era mascherato
+        dall'hang).
+
+      **FIX 1 (decisione utente: opzione (a) fra le tre proposte) -- bound
+      handling nel motore.** Nuovi `io/bound_transform.m` /
+      `io/bound_transform_inv.m`: porting della boundary transformation di
+      Hansen (pycma `cma/boundary_transformation.py`), mirroring periodico +
+      patch quadratiche C1 ai bordi (`al=0.05`), identita' ESATTA in
+      `[al,1-al]`. Il motore lavora ora in spazio NON vincolato e la
+      trasformazione vive dentro la funzione obiettivo (`solver.m`:
+      `fun_norm = fun_box(bound_transform(xn))`), quindi `/core` resta ignaro
+      (S3) e ARCH non e' toccato. Scartate: (b) penalita' di box (S5.2) e
+      (c) bound come `cineq` (richiederebbe valutare `f` fuori dominio --
+      cioe' esattamente i punti degeneri su TSTO -- e diluirebbe 3
+      uguaglianze di missione con 20 disuguaglianze di box sul ramo non
+      validato).
+      Verificato: unit test di PROPRIETA' (in-box, identita' interna esatta,
+      |derivata|<=1, round-trip 2.4e-22, nessun plateau fuori dominio);
+      regressione **verde** (sphere n=25 `f_best=1.53e-16` vs 1.13e-16 di
+      Fase 3; g13 5 seed **5/5 feasible e 5/5 ottimo globale**, 64k-553k
+      eval, 5-9 restart, in linea con Fase 3).
+      Effetto sul caso reale (stesso x0/bounds/tol_con/seed, budget 2000
+      eval): **`feasible=1` in 2020 valutazioni e 1 min 39 s**, 2020/2020
+      valutazioni distinte, 2 restart IPOP -- contro `feasible=0` a 300 e a
+      12000 eval e feasible solo a ~200000 (3h30m).
+      **Due voci di questo documento vanno quindi lette come superate**: il
+      "floor di eval-to-feasibility ~200000" era un artefatto del bug, non
+      una proprieta' del problema; e la conclusione "requisito dei 5 minuti
+      con altissima probabilita' INFATTIBILE" torna in discussione (99 s per
+      un run che trova feasible). Attenzione: e' UN solo seed a budget
+      ridotto, NON un run a convergenza su piu' seed -- non e' ancora una
+      dimostrazione, e il Gate M5 resta aperto.
+
+      **FIX 2 (decisione utente: opzione B della proposta ceq->cineq) --
+      vincolo di disuguaglianza sul margine di delta-v.** Le 3 uguaglianze
+      restano (opzione A, `|h_k|-tol_con_k<=0`, NON applicata). Aggiunto in
+      TSTO `OPT.g = (dv_required - dv_available)/ue2 <= 0` (adimensionale),
+      lungo la catena `injection_target_orbit.m` (2 output in piu', erano
+      gia' calcolati in `deliver_delta_v` e scartati) -> `simulator.m`
+      (`other.INJ`, popolata in fase 8) -> `eval_fgh.m` -> `traj_problem.m`
+      (anche il ramo `catch` restituisce `g` di lunghezza costante: un
+      `cineq` di lunghezza variabile romperebbe `local_cell2mat` in
+      `arch_rank.m`, che deduce n_ineq dal primo individuo).
+      Scala `ue2` = COSTANTE del veicolo, non `dv_available` (che dipende da
+      x: cambierebbe l'ORDINAMENTO fra candidati, non solo la scala,
+      rompendo l'invarianza monotona di S5.2).
+      Misurato: dove `h` era piatta a ~1e-9, `g` e' continua e monotona
+      (-1.057 a 4 t, -0.844 a 6 t, -0.242 a 15 t, -0.076 a 19 t) e si annulla
+      verso il tetto -> il vincolo diventa ATTIVO all'ottimo, cioe' il
+      problema non e' piu' degenere. Round-trip nominale invariato
+      (`f=-4000`, `h~1e-9`); caso reale con `cineq` non vuoto (prima volta):
+      `feasible=1` a 2000 eval.
+      **Discontinuita' residua NON risolta, per decisione utente**: il salto
+      a 20 t e' `END_PROP2` (propellente stadio 2 esaurito in fase 6, il run
+      termina prima di fase 7/8, scelta di modellazione gia' documentata in
+      `simulator.m`), non saturazione del burn. Un proxy continuo e' stato
+      proposto e scartato: "la mancanza di dv non permette di arrivare a
+      orbita target, e' gia' pagato" dai residui `h` (~3.9e6 m sul perigeo)
+      -- duplicare quel segnale non aggiunge informazione. Coerente col
+      fatto che ARCH ORDINA la violazione (`rank_v`), non la pesa: il
+      fallback non deve portare informazione. Dove la magnitudine conta e'
+      il controllore di alpha (`local_centering_error` usa `mean/std` dei
+      `cineq` GREZZI): per questo il fallback del `catch` e' stato portato
+      da 1e3 a 20 (ordinamento invariato: missione chiusa < non chiusa (10)
+      < simulazione fallita (20), ma non piu' capace di dominare le
+      statistiche con l'~1% di valutazioni fallite osservato).
+
+      **Aperto, non toccato in questa sessione**: (i) `tol_fun` resta inerte
+      finche' non esiste un punto feasible (`f_best_feas=Inf` ->
+      `Inf-Inf=NaN` -> criterio mai vero): una popolazione bloccata non fa
+      scattare restart -- meno urgente ora, difetto reale comunque; (ii)
+      `ub` di Mpayload ~3x sotto il tetto fisico (T1) -> con questo box
+      l'ottimo e' sul bordo per definizione, da decidere se e' un requisito;
+      (iii) `eps_ineq`/scala per-vincolo per `cineq` in `arch_rank.m`: il
+      caso reale ha ora UN solo `cineq` gia' adimensionale (configurazione
+      benigna), il gap non e' stato davvero esercitato ne' validato.
+
+      **AGGIORNAMENTO (2026-09-09, stessa sessione): cambio di caso di test
+      -> `validation_test_2`, e accuratezza degli eventi portata sotto la
+      tolleranza della funzione di costo (requisito utente).**
+
+      - **Caso di test** (decisione utente): `run_real_case.m` usa ora
+        `TSTO/input/validation_test_2` invece di `reference_LV`. Perigeo
+        target 400 km invece di 200 -> orbita target CIRCOLARE 400x400 km
+        (burn di injection piu' esigente); `GUIDANCE_VARS.csv` identiche, per
+        cui `x0`/bounds di `design_variables.csv` restano validi senza
+        modifiche; `tol_con` si adatta da se' (3% -> 12 km sul perigeo).
+        **Bounds NON cambiati** (decisione utente esplicita), `ub(Mpayload)`
+        resta 6000: su questo dataset il margine di delta-v a 6000 kg e'
+        ancora `g=-0.83`, quindi l'ottimo resta il bordo del box -- registrato
+        come fatto, non riproposto come modifica.
+
+      - **Bug preesistente sbloccato** (`TSTO/source/injection_target_orbit.m`):
+        `validation_test_2` NON partiva, nemmeno nella configurazione nuda del
+        suo readme. Con target circolare l'intervallo di raggi ammissibili in
+        fase 8 degenera in un PUNTO, e la validazione tollerava
+        `max(1 mm, 1e-10*r)`: il punto di fine coast cadeva a 0.38 m dal
+        target e l'intero caso veniva rifiutato. Il readme del dataset era
+        stato validato con `ode45`, prima di `rk5.m` -- cadeva dentro il
+        millimetro per fortuna, non per accuratezza. Fix: la proiezione
+        radiale del punto di burn sull'intervallo ammissibile serve SOLO a
+        calcolare il delta-v richiesto (una manovra impulsiva cambia la
+        velocita', non la posizione: il punto deve appartenere all'orbita
+        target), mentre **l'orbita raggiunta e' valutata sul punto VERO** --
+        cosi' lo scarto ricompare nei residui `h` invece di essere nascosto
+        dentro il modello (rif. S7).
+
+      - **REQUISITO UTENTE (2026-09-09)**: *l'accuratezza del cross-over di
+        apogeo deve essere migliore della tolleranza ammessa dalla funzione
+        di costo.* Non era soddisfatto: `rk5.m` localizzava gli eventi per
+        **interpolazione lineare** di tempo E stato dentro il passo; con
+        passo cinematico fino a `tmax=2 s` e |v|~7.6 km/s la corda e' ~15 km,
+        quindi errore di posizione di ordine km (misurato 1613 m sul raggio
+        di apogeo con `Mpayload=0`, cioe' lo STESSO ordine della tolleranza
+        di missione, 12 km).
+        Fix in `rk5.m`: la localizzazione ora cerca il crossing dentro il
+        bracket `[tn, tn+h]` con **secante safeguarded (Illinois)**, e ogni
+        tentativo e' valutato **ri-integrando un sub-passo RK5** dal nodo
+        `tn` -- lo stato all'evento ha quindi l'accuratezza del quinto ordine
+        dell'integratore, non quella di una corda. Gli stadi di Butcher sono
+        stati estratti in `rk5_single_step` (usata sia dal loop sia dalla
+        rifinitura: nessuna duplicazione). Tolleranza sul bracket temporale
+        `tol_t=1e-6 s` (~8 mm a 8 km/s), cap di 40 iterazioni come sola rete
+        di sicurezza.
+        **Misurato**: scarto sul raggio di apogeo **0.4 mm** su reference_LV
+        e **4-8 mm** su validation_test_2 (era rispettivamente ~0.4 m e fino
+        a 1613 m) -> 6 ordini di grandezza sotto `tol_con`. Costo: invariato
+        entro il rumore (0.10-0.16 s per valutazione interpretata prima e
+        dopo; la rifinitura aggiunge pochi sub-passi RK5 per evento, ~8
+        eventi per run). Di conseguenza `radius_tolerance` in
+        `injection_target_orbit.m` e' stata portata a **1 m** (>100x sopra lo
+        scarto osservato, ~4 ordini sotto la tolleranza di missione).
+        Verificato: tutti e tre i dataset chiudono la missione
+        (`reference_LV` 200000.0012/400000.0004, `validation_test` idem,
+        `validation_test_2` 400000.0002/400000.0005).
+        **Nota onesta su un numero che PEGGIORA**: il round-trip nominale di
+        `reference_LV` dava `h~1e-9` e ora da' `h~1e-2` m. Non e' una
+        regressione di accuratezza: prima il punto di burn cadeva
+        STRETTAMENTE DENTRO l'intervallo ammissibile (target ellittico
+        200x400 km) e l'injection centrava il target per costruzione,
+        azzerando `h` per definizione; ora il punto arriva 0.4 mm sopra
+        `ra_target`, la proiezione entra in gioco e il residuo riportato e'
+        quello VERO (~1 cm), non quello nascosto dalla proiezione. Entrambi
+        sono comunque ~6 ordini di grandezza sotto `tol_con`.
+
+      - **Stato del caso reale su `validation_test_2`** (run breve, 2000
+        eval, seed 1, stesso x0/bounds/tol_con): `feasible=1`,
+        `f_best~-5999` (Mpayload al bordo del box), ~107 iterazioni, 2
+        restart IPOP. Differenza qualitativa rispetto a `reference_LV`: i
+        residui `h` qui VARIANO con `x` (millimetri-metri, non ~1e-9
+        costante), quindi le uguaglianze tornano a portare informazione al
+        ranking.
+
+      - **Requisito dei 5 minuti**: ABBANDONATO per ora (decisione utente),
+        sostituito dall'obiettivo generico "massimizzare la velocita'".
+        Rif. S2 "Vincoli operativi vincolanti" per la leva che NON va
+        proposta.
+
+      **AGGIORNAMENTO (2026-09-09, sessione "continuazione sul payload"):
+      bound del payload allargato e METODO DI CONTINUAZIONE (proposta
+      utente) -- migliore risultato ottenuto finora sul caso reale,
+      23707 kg feasible con TUTTE le variabili interne al box.**
+
+      - **Bound (decisione utente)**: `Mpayload` da `[0, 6000]` a
+        `[4000, 30000]` kg in `real_case/design_variables.csv`. Motivo: con
+        `ub=6000` l'ottimo era sul bordo PER COSTRUZIONE (a 6000 kg il
+        margine di delta-v era ancora `g=-0.55`, cioe' 1878 m/s inutilizzati),
+        quindi il box mascherava il trade-off fisico. Vale SOLO per Mpayload:
+        i bound delle 9 variabili di guida restano invariati.
+
+      - **Tetto fisico su `validation_test_2` (sweep 1-D, guida nominale)**:
+        feasible fino a **19600 kg**, primo infeasible a 19800. `g` sale
+        monotono verso zero (-1.042 a 4 t, -0.176 a 14 t, -0.013 a 19.6 t) ->
+        il vincolo che morde e' ora la FISICA, non il box.
+
+      - **Run brute-force (nessuna continuazione, seed 1)**: 12000 eval ->
+        12235 kg (`g=-0.322`, ~20 min); 60000 eval -> **15945 kg**
+        (`g=-0.313`, ~100 min, 3 restart). Feasible entrambi, tutte le
+        variabili interne. **Ma `g` resta lontano da zero**: CMA-ES NON
+        cavalca il vincolo attivo, lascia delta-v (e quindi payload) sul
+        tavolo. Misurato: bisecando il payload sulla guida del run da 60000
+        eval si arriva a 17098 kg, cioe' **1153 kg lasciati sul tavolo** da
+        un run di 100 minuti.
+
+      - **METODO DI CONTINUAZIONE (proposta utente)**:
+        `real_case/run_continuation.m`. Un punto feasible con delta-v
+        residuo certifica che tutto il segmento di payload sotto di se' e'
+        DOMINATO (payload minore = vincolo piu' lasco), quindi non va
+        ri-cercato: si alza `lb(Mpayload)` a quel livello e si riparte a
+        caldo. Lecito qui perche' `f=-Mpayload` dipende da UNA variabile e
+        il vincolo attivo e' monotono in essa (misurato, sweep sopra).
+        Risultato, **20053 valutazioni (~27 min)**: 12235 (seed) -> 14525
+        (bisezione) -> 17810 -> 21412 -> **23707 kg**, `feasible=1`,
+        `|h| = [0.67 mm, 2.0 mm, 5e-16]` contro `tol_con = [12 km, 12 km,
+        0.0149]`, TUTTE le 10 variabili interne al box (payload al 75.8%).
+        Cioe' **+48% di payload con 1/3 delle valutazioni** rispetto al run
+        brute-force da 60000 eval.
+
+      - **Due errori di progetto trovati ESEGUENDO il metodo** (rif. S7,
+        entrambi corretti, entrambi istruttivi):
+        1. **Il predittore non puo' extrapolare `g` a zero.** Prima versione:
+           pendenza locale `dg/dMpayload` -> payload a cui `g=0`. SBAGLIATO:
+           il vincolo attivo al tetto non e' `g` (continuo) ma la
+           discontinuita' `END_PROP2` (propellente stadio 2 esaurito in fase
+           6), che arriva PRIMA. Misurato sulla guida del seed: ultimo
+           feasible 14000 kg con `g=-0.176`, muro fra 14000 e 15000, mentre
+           l'estrapolazione prevedeva 16646 kg -> `x0` finiva 2.6 t oltre il
+           muro, in una regione interamente infeasible da cui lo stadio non
+           e' piu' rientrato (5000 eval, zero feasible). Sostituito con
+           **bisezione del muro** a guida congelata (~9 eval, risoluzione 50
+           kg): trova il limite VERO qualunque dei due vincoli lo produca.
+        2. **`sigma0` va commisurata alla fetta lasciata dal ratchet, non al
+           box.** Con `back_off=250` kg la fetta ammissibile era 250 kg e
+           `sigma0=0.15` dava un passo di ~2360 kg sul solo payload: ~10x
+           piu' largo della regione da trovare -> 5000 eval, ZERO punti
+           feasible, PUR partendo da un `x0` feasible (che CMA-ES non valuta
+           mai: campiona ATTORNO a `xmean`). Con `sigma0=0.03` e
+           `back_off=1000` kg lo stesso stadio ha guadagnato +3189 kg.
+
+      - **Meccanica osservata (perche' i due pezzi sono complementari)**: il
+        solver spesso NON alza il payload, alza l'EFFICIENZA della guida, e
+        il guadagno si presenta come delta-v residuo (stadio 3: payload
+        +108 kg ma `g` da -0.003 a -0.181); la bisezione lo incassa poi in
+        payload (+2295 kg in 8 eval). CMA-ES cerca, la bisezione monetizza.
+
+      - **Limiti dichiarati (NON risolti)**: (i) il ratchet e' MONOTONO
+        sull'obiettivo -- se l'ottimo globale richiedesse una guida in un
+        bacino raggiungibile solo passando per payload piu' bassi di quello
+        gia' certificato, il metodo lo esclude (compromesso deliberato: la
+        garanzia globale con questo budget non c'era comunque); (ii) 23707 kg
+        e' un LOWER BOUND del tetto reale, non un ottimo certificato: lo
+        stadio 4 (`lb=22707`) non ha trovato punti feasible in 5000 eval, ed
+        e' un fallimento di RICERCA, non una prova di tetto; (iii) tutto su
+        UN seed (seed=1), nessuna statistica multi-seed; (iv) resta valido
+        che oltre il muro la violazione non porta informazione direzionale
+        (`g` = fallback costante 10, `|h|` ~6.7e6 m quasi piatta), quindi la
+        ricerca non sa da che parte rientrare -- e' la ragione strutturale
+        dei fallimenti di stadio.
+
+      - **Opzione strutturale proposta e NON eseguita (serve ok utente)**:
+        eliminare `Mpayload` dalle variabili di ricerca e derivarlo per
+        bisezione da ogni guida candidata (formulazione bilevel: 9 variabili,
+        obiettivo = payload al muro, ogni candidato feasible per costruzione,
+        nessuna discontinuita' da inseguire). Costo ~5-9 valutazioni per
+        candidato, warm-startabile dal muro precedente.
+
+      **AGGIORNAMENTO (2026-09-09, sessione "procedura di continuazione"):
+      la continuazione diventa una PROCEDURA parametrica
+      (`real_case/run_continuation.m`, funzione con struct di opzioni) e il
+      predittore passa in MASSA. Decisione utente: non si adotta la
+      formulazione bilevel proposta sopra ("tieni cosi'").**
+
+      - **Controlli esposti all'utente** (richiesta esplicita): `n_stage`
+        (stadi di continuazione), `stage_eval` e `stage_iter` (budget per
+        stadio, scalare o VETTORE per-stadio), `max_restarts` (restart IPOP
+        per stadio), `sigma0_warm/cold`, `back_off`, `x0_retreat`, `patience`,
+        `vary_seed`, parametri del predittore (`ratio_guess`, `ratio_safety`,
+        `push_max`, `bisect_tol`), `min_gain`, `dataset`, `seed`. Il merge
+        delle opzioni RIFIUTA i campi non riconosciuti (un typo non passa
+        silenzioso).
+
+      - **Nuova diagnostica esposta da TSTO** (non un vincolo): `prop_residual`
+        = propellente residuo stadio 2 = `theMass(end) - (Minert2 + Mpayload)`,
+        aggiunta come 4a uscita opzionale di `eval_fgh.m` -> `traj_problem.m`
+        -> `real_case/traj_cost.m`. Il solver ne chiede 3 e non la vede: il
+        contratto S4 resta invariato.
+
+      - **MISURA CHIAVE: il muro del payload e' una BIFORCAZIONE DI TANGENZA,
+        non un esaurimento graduale.** In fase 6 l'apogeo osculante sale e
+        sfiora il target; con poco payload in piu' non lo raggiunge, l'evento
+        non scatta e il motore brucia fino a esaurimento (`END_PROP2`).
+        Misurato sulla guida del primo seed:
+          14525 kg -> prop_res 1912.50 kg, deficit apogeo 0.4 mm,  g -0.098, OK
+          14550 kg -> prop_res    0.00 kg, deficit apogeo 164.5 km, g +10,   NO
+        Nessuna quantita' attraversa lo zero in modo continuo: ne segue che
+        NESSUN predittore puo' essere esatto, e che serve sempre un correttore
+        (bisezione). Sul muro restano ~1900 kg di propellente INUTILIZZABILE
+        bloccati dalla tangenza: e' il margine che gli stadi CMA-ES cercano di
+        liberare trovando una guida meno tangente.
+
+      - **TSIOLKOVSKY testato come predittore (proposta utente) e RIGETTATO
+        come tale, mantenuto come primo guess.** Con Delta-v invariante,
+        `m_wall = MProp2*(Minert2+prop_res+m)/(MProp2-prop_res) - Minert2` e
+        `r = R/(R-1)`. Misurato (muro vero 14537 kg): da 14525 predice 16802
+        (pendenza misurata: 14992), da 14000 predice 18175 (misurata: 15861);
+        `r` = 1.19 contro 0.24 misurato vicino al muro, un fattore 5. Sbaglia
+        dal lato OTTIMISTICO perche' ignora che il Delta-v RICHIESTO cresce col
+        payload e che il muro e' una tangenza. Resta pero' il guess giusto
+        quando NON esistono run precedenti: si calcola dalle masse del veicolo
+        invece di essere scelto a mano, e sovrastimando genera subito il
+        bracket superiore. Da lI' in avanti subentra la pendenza misurata.
+
+      - **`r` NON e' una costante del veicolo**: misurato 0.217 sul seed, 0.833
+        e 1.098 su altri punti di guida (fattore 5). Va ri-misurato localmente
+        ad ogni coppia di punti; la persistenza nel seed serve come guess
+        iniziale, non come verita'.
+
+      - **MISURA CHIAVE 2: il rendimento del budget PER STADIO satura quasi
+        subito.** A `lb`, `x0`, `sigma0` e seed identici, lo stesso stadio ha
+        dato **esattamente** lo stesso risultato con 3000, 6000 e 10000
+        valutazioni (16769.9 kg, budget speso tutto, nessun arresto anticipato).
+        Cio' che fa progredire e' il RESTART, il PUSH e l'alzata di `lb`, non la
+        lunghezza dello stadio. Conseguenza di progetto: `vary_seed` (default
+        true) -- ri-tentare uno stadio a vuoto con lo STESSO seed rigioca la
+        ricerca identica, e non e' un ri-tentativo.
+
+      - **`x0_retreat`**: il push lascia il punto ESATTAMENTE sul muro, dove
+        ogni perturbazione della guida e' infeasible e l'obiettivo punta fuori
+        dalla regione ammissibile -- la peggiore condizione iniziale per
+        CMA-ES. Separati i due ruoli: punto CERTIFICATO (riportato) e punto di
+        PARTENZA (arretrato di `x0_retreat` dentro la fetta). Misurato: +753 kg
+        sullo stesso stadio a budget invariato (15935.8 -> 16688.5 kg).
+
+      - **Confronto a parita' di seed (12235 kg) e di budget (~20.5k eval)**:
+        budget CRESCENTE `[1500 3000 6000 10000]` + 2 restart + retreat ->
+        **17127.6 kg in 20574 eval**; budget COSTANTE 5000/stadio + 9 restart
+        + x0 sul muro -> **23707 kg in 20053 eval**. La configurazione a stadi
+        corti e' molto piu' efficiente sul PRIMO stadio (1510 eval danno 16688
+        kg, il 94% di quanto 5009 eval danno) ma NON arriva allo stesso punto
+        finale: la leva mancante sono i restart per stadio.
+
+      **AGGIORNAMENTO (2026-09-09, RELEASE 2.0.0): trovata la causa della
+      varianza (il restart Sobol), corretta secondo la regola dell'utente, e
+      fissati i default ufficiali. Miglior risultato mai misurato:
+      24655.3 kg in 20075 valutazioni.**
+
+      - **CAUSA della varianza: `core/ipop_restart.m`.** Il restart
+        (a) sostituiva `xmean` con un punto Sobol nell'INTERO box, buttando via
+        il warm start e rimettendoci `sigma0` attorno -- ne' sfruttamento (posto
+        sbagliato) ne' esplorazione (passo piccolo); (b) il `jitter` pesca dallo
+        stream RNG, il cui stato dipende da quante iterazioni e' durato il
+        segmento precedente -> due run identici a meno di 1.8 kg su x0 finivano
+        in bacini diversi (15935 contro 17714 kg allo stesso stadio). Tutta la
+        varianza del risultato veniva da lI'.
+
+      - **REGOLA UTENTE applicata**: "se la soluzione e' fattibile il restart si
+        basa sulla soluzione precedente; ripartire da Sobol+jitter ha senso solo
+        per soluzione infeasible". Implementata come `opts.restart_mode`
+        ('auto' default | 'sobol' | 'warm') in `io/parse_opts.m` +
+        `core/ipop_restart.m`: con un punto ammissibile noto il restart e'
+        CALDO (x_best_feas + `restart_jitter`), altrimenti Sobol. `/core` resta
+        dominio-agnostico: riceve "il miglior punto noto", non sa cosa sia.
+        La parte "predizione dal propellente" NON e' entrata nel motore (e'
+        fisica del lanciatore): vive in `run_continuation.m`.
+
+      - **`x0` ORA VIENE VALUTATO** (`core/cmaes_core.m`, 1 valutazione).
+        CMA-ES campiona ATTORNO a xmean e non lo valutava mai, con due
+        conseguenze misurate: (i) con un x0 AMMISSIBILE un run che non trovava
+        punti ammissibili restituiva un punto PEGGIORE del guess dell'utente
+        (accadeva in ogni stadio fallito); (ii) il restart caldo non poteva
+        attivarsi perche' `x_best_feas` era vuoto. Non altera l'algoritmo:
+        xmean non entra nel ranking, solo nei tracker.
+
+      - **REGRESSIONE VERDE** dopo le modifiche a `/core`: sphere n=25
+        `f_best=3.93e-20` (era 1.53e-16 -- MIGLIORE di 4 ordini: senza vincoli
+        ogni punto e' ammissibile, quindi il restart ri-centra sul best invece
+        che su un punto casuale); g13 **3/3 ottimo globale** (56569, 115913,
+        512953 eval; 4, 6, 9 restart), in linea con Fase 3 (64k-553k) e con
+        esattamente +1 valutazione per run (quella di x0). Il restart caldo NON
+        ha distrutto la ricerca globale.
+
+      - **Bug corretto in `run_continuation.m`**: `min_gain` veniva usato anche
+        come criterio di ACCETTAZIONE, quindi un push che guadagnava 83 kg
+        veniva contato come stadio a vuoto E il punto scartato. Ora un
+        miglioramento vero si accetta sempre; `min_gain` governa solo la
+        `patience`.
+
+      - **`explore_every` (default 2)**: alterna stadi CALDI (restart caldo) e
+        ESPLORATIVI (restart Sobol), a parita' di `sigma0_warm`. Misurato che la
+        differenza deve stare SOLO nel modo di restart: uno stadio esplorativo
+        avviato con `sigma0_cold=0.3` dentro una fetta ammissibile di ~1000 kg
+        rende quasi ogni campione infeasible e torna x0. Il ratchet rende
+        l'esplorazione SENZA RISCHIO (uno stadio fallito non puo' perdere il
+        payload certificato), quindi conviene tenerla.
+
+      - **DEFAULT UFFICIALI** (`local_defaults` in run_continuation.m):
+        `n_stage=8`, `stage_eval=2500` costante, `max_restarts=3`,
+        `explore_every=2`, `patience=3`, `x0_retreat=500`, `back_off=1000`,
+        `sigma0_warm=0.03`, `vary_seed=true`, `ratio_guess=[]` (Tsiolkovsky).
+
+      - **RUN UFFICIALE 2.0.0** (seed 1, dal seed a 12235 kg, 20075 eval):
+        16688.5 -> 16771.7 -> 16792.3 -> 17146.5 -> 21878.9 -> 21916.8 ->
+        24655.1 -> **24655.3 kg**, `g=-1.08e-04`, `prop_res=3 kg`,
+        `|h| = [2.5 mm, 7.6 mm, 4.4e-16]` contro `tol_con=[12 km, 12 km,
+        0.0149]`, TUTTE le 10 variabili interne al box (payload al 79.4%),
+        `r` appreso 1.1166. Batte il 23707 kg precedente a parita' di budget.
+        Gli stadi 5 e 7 portano +4.7 t e +2.7 t, gli altri quasi nulla: la
+        distribuzione del guadagno resta molto disomogenea (un solo campione,
+        nessuna statistica multi-seed).
+
 - [x] Dimensione di calibrazione benchmark: usata n=25 per sphere (proposta
       originale), n=5 per g13 (dimensione nativa del problema, non scelta),
       n=2 per rosenbrock vincolata (dimensione nativa della formulazione

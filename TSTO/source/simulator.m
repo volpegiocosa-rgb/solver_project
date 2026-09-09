@@ -105,6 +105,20 @@ function [RES, other] = simulator(config)
 	max_iterations = 14;   % rete di sicurezza anti-loop-infinito (8 fasi al piu' con 1 salto)
 	iteration = 0;
 
+	% other.INJ: bilancio di delta-v del burn di injection (fase 8), esportato
+	% per l'ottimizzatore esterno (eval_fgh.m -> OPT.g). Serve perche' il
+	% vincolo che LIMITA davvero la missione e' "delta-v richiesto <= delta-v
+	% disponibile", una DISUGUAGLIANZA continua, mentre le tre uguaglianze
+	% terminali sono soddisfatte per costruzione da injection_target_orbit.m
+	% quando il propellente basta (rif. solver_project/real_case/
+	% diagnostic_plan.md, T1: residui ~1e-9 su tutto l'insieme ammissibile,
+	% quindi nessun gradiente utile per l'ottimizzatore).
+	% reached=false se la simulazione si arresta prima della fase 8 (crash,
+	% suborbitale, trigger di fase mancato): in quel caso il bilancio di
+	% delta-v non e' definito e il chiamante deve trattarlo a parte.
+	other.INJ = struct('reached', false, 'dv_required', NaN, ...
+	                   'dv_available', NaN, 'dv_margin', NaN);
+
 	while phase <= 8
 		iteration = iteration + 1;
 		if iteration > max_iterations
@@ -335,11 +349,20 @@ function [RES, other] = simulator(config)
 			ue2 = other.MOT(2).vacuum_thrust / other.MOT(2).mass_flow_rate;
 
 			[v_final, dv_delivered, residual_mass, ...
-			 apogee_reached, perigee_reached, inclination_reached] = ...
+			 apogee_reached, perigee_reached, inclination_reached, ...
+			 dv_required, dv_available] = ...
 			    injection_target_orbit(y_start(1:3), y_start(4:6), y_start(7), ...
 			        available_propellant, other.MIS.apogee_altitude_target, ...
 			        other.MIS.perigee_altitude_target, ...
 			        other.MIS.target_orbital_inclination, other.ENV, ue2);
+
+			% bilancio di delta-v del burn (vedi commento su other.INJ sopra):
+			% dv_margin > 0 significa missione NON chiudibile con il
+			% propellente residuo, ed e' di quanto manca.
+			other.INJ.reached      = true;
+			other.INJ.dv_required  = dv_required;
+			other.INJ.dv_available = dv_available;
+			other.INJ.dv_margin    = dv_required - dv_available;
 
 			y_start = [y_start(1:3); v_final; residual_mass; y_start(8) + dv_delivered];
 

@@ -1,4 +1,4 @@
-function [f, g, h] = traj_problem(x, other, opts)
+function [f, g, h, prop_residual] = traj_problem(x, other, opts)
 	% traj_problem  Wrapper superiore per l'ottimizzatore esterno (CMA-ES/
 	%               ARCH, solver_project — sostituisce la Differential
 	%               Evolution originariamente prevista, stessa interfaccia
@@ -161,12 +161,30 @@ function [f, g, h] = traj_problem(x, other, opts)
 		[RES, other_final] = simulator(config);
 		OPT = eval_fgh(RES, other_final);
 	catch err %#ok<NASGU>
+		% Punto non valutabile: f peggiore possibile e vincoli ampiamente
+		% violati. OPT.g deve avere la STESSA lunghezza del ramo riuscito
+		% (1, rif. eval_fgh.m: margine di delta-v adimensionale): un cineq di
+		% lunghezza variabile fra i candidati romperebbe l'aggregazione della
+		% popolazione in constraints/arch_rank.m, che deduce n_ineq dal primo
+		% individuo. Il valore resta sopra g_unreached di eval_fgh.m (10),
+		% cosi' l'ordinamento e' missione chiusa < missione non chiusa <
+		% simulazione fallita -- ma di POCO, deliberatamente: ARCH ordina la
+		% violazione (rank_v in constraints/arch_rank.m), quindi la magnitudine
+		% non conta per il ranking, MENTRE conta nel controllore di alpha
+		% (local_centering_error usa mean/std dei cineq GREZZI): un valore
+		% enorme qui verrebbe dominato dalle poche valutazioni fallite (~1%
+		% osservato) e falserebbe il segnale di controllo.
 		OPT.f = Inf;
-		OPT.g = [];
+		OPT.g = 20;
 		OPT.h = 1e6 * ones(3, 1);
+		% Diagnostica (non un vincolo): simulazione fallita -> nessun
+		% propellente residuo misurabile. NaN, non 0: 0 direbbe "esattamente
+		% sul muro", che e' un'informazione che qui non si ha.
+		OPT.prop_residual = NaN;
 	end
 
 	f = OPT.f;
 	g = OPT.g;
 	h = OPT.h;
+	prop_residual = OPT.prop_residual;
 end

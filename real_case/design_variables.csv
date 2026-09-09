@@ -8,4 +8,4 @@ idx name unit x0 lb ub overwrites note
 7 insertion_starting s 200 5 300 other.GUI.insertion_starting nessuna
 8 AoA_rate deg_s 0 -5 5 other.GUI.AoA_rate nessuna
 9 plane_controller_kp - 0.5 0.25 0.75 other.GUI.plane_controller(1) plane_controller_kd/ki_NON_sono_variabili_di_design_(rimangono_fissi_al_nominale_0.1/0.01,_decisione_utente)
-10 Mpayload kg 4000 0 6000 other.MASS.Mpayload obiettivo_f=-Mpayload,_range_[0,6000]_esplicito_non_derivato_dal_nominale
+10 Mpayload kg 4000 4000 30000 other.MASS.Mpayload obiettivo_f=-Mpayload,_range_[4000,30000]_esplicito_(decisione_utente_2026-09-09:_ub_alzato_da_6000_a_30000_e_lb_da_0_a_4000_per_verificare_che_l_ottimo_sia_INTERNO,_deciso_dalla_fisica_(g->0)_e_non_dal_box)

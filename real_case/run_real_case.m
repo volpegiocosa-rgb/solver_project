@@ -40,7 +40,24 @@
     addpath(fullfile(here, '..', 'TSTO', 'source'), '-end');
     addpath(fullfile(here, '..', 'TSTO', 'source', 'native'), '-end');
 
-    tsto_input_dir = fullfile(here, '..', 'TSTO', 'input', 'reference_LV');
+    % === CASO DI TEST: validation_test_2 (decisione utente, 2026-09-09) =====
+    % Sostituisce reference_LV. Differenze (rif. TSTO/input/validation_test_2/
+    % readme.md): perigeo target 400 km invece di 200 km -> orbita target
+    % CIRCOLARE 400x400 km, quindi burn di injection piu' esigente; Mpayload
+    % nominale in LV.csv 2000 kg invece di 4000 (irrilevante qui: Mpayload e'
+    % la 10a variabile di design, x(10) sovrascrive LV.csv). GUIDANCE_VARS.csv
+    % identiche a reference_LV -> x0/bounds di design_variables.csv restano
+    % validi senza modifiche. tol_con qui sotto si adatta da solo (3% dei
+    % target, quindi perigeo 12 km invece di 6 km).
+    % NOTA: i bounds delle 9 variabili di guida NON vengono cambiati
+    % (decisione utente esplicita). ECCEZIONE (decisione utente 2026-09-09):
+    % Mpayload passa da [0, 6000] a [4000, 30000] kg -- con ub=6000 l'ottimo
+    % era sul bordo del box PER COSTRUZIONE (il tetto fisico misurato con lo
+    % sweep 1-D e' ben oltre, e il margine di delta-v a 6000 kg era ancora
+    % g=-0.55), quindi il box mascherava il trade-off. Con ub=30000 il
+    % vincolo che deve mordere e' quello FISICO (g -> 0), e l'ottimo atteso
+    % e' INTERNO al box.
+    tsto_input_dir = fullfile(here, '..', 'TSTO', 'input', 'validation_test_2');
     other = interface(tsto_input_dir);
 
     % === variabili di design: x0/lb/ub letti da design_variables.csv

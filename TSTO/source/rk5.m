@@ -94,16 +94,9 @@ function [t, y, te, ye, ie] = rk5(f, t0, tmin, tmax, tend, y0, other, eventFcn, 
             h = tend - tn;
         end
 
-        % --- Butcher's RK5 Coefficients & Stages ---
-        k1 = h * f(tn, yn);
-        k2 = h * f(tn + 1/4*h, yn + 1/4*k1);
-        k3 = h * f(tn + 1/4*h, yn + 1/8*k1 + 1/8*k2);
-        k4 = h * f(tn + 1/2*h, yn - 1/2*k2 + k3);
-        k5 = h * f(tn + 3/4*h, yn + 3/16*k1 + 9/16*k4);
-        k6 = h * f(tn + h, yn - 3/7*k1 + 2/7*k2 + 12/7*k3 - 12/7*k4 + 8/7*k5);
-
+        % --- Un passo RK5 (stadi di Butcher in rk5_single_step) ------
+        y_next = rk5_single_step(f, tn, yn, h);
         t_next = tn + h;
-        y_next = yn + (7*k1 + 32*k3 + 12*k4 + 32*k5 + 7*k6) / 90;
 
         n_step = n_step + 1;
         if n_step > size(t, 1)
@@ -131,15 +124,26 @@ function [t, y, te, ye, ie] = rk5(f, t0, tmin, tmax, tend, y0, other, eventFcn, 
                                      (direction(idx) == -1 && val_new(idx) < val_old(idx));
 
                     if is_correct_dir
-                        % Localizzazione lineare dell'evento (stessa
-                        % semplificazione gia' presente nella bozza
-                        % originale: un passo cinematico puo' essere
-                        % grosso, quindi meno preciso di ode45 su questo
-                        % punto -- accettabile vista la tolleranza di
-                        % missione, 3% del target, cfr. CLAUDE.md Fase 5)
-                        theta = val_old(idx) / (val_old(idx) - val_new(idx));
-                        t_evt = tn + theta * h;
-                        y_evt = yn + theta * (y_next - yn);
+                        % Localizzazione dell'evento per RI-INTEGRAZIONE
+                        % (rif. requisito utente: l'accuratezza del
+                        % cross-over dell'apogeo deve essere MIGLIORE della
+                        % tolleranza ammessa dalla funzione di costo).
+                        % La versione precedente interpolava LINEARMENTE
+                        % tempo e stato dentro il passo: con un passo
+                        % cinematico fino a tmax=2 s e |v|~7.6 km/s la corda
+                        % e' ~15 km, quindi l'errore di posizione era di
+                        % ordine km -- misurato 1613 m sul raggio di apogeo
+                        % in input/validation_test_2, cioe' dello stesso
+                        % ordine della tolleranza di missione (12 km): non
+                        % accettabile. Ora il crossing e' cercato dentro il
+                        % bracket [tn, tn+h] con secante safeguarded
+                        % (Illinois) e ogni tentativo e' valutato integrando
+                        % un sub-passo RK5 dal nodo tn: lo stato all'evento
+                        % ha quindi la stessa accuratezza del quinto ordine
+                        % dell'integratore, non quella di una corda.
+                        [t_evt, y_evt] = localize_event( ...
+                            f, eventFcn, other, idx, tn, yn, h, ...
+                            val_old(idx), val_new(idx), y_next);
 
                         te = [te; t_evt];
                         ye = [ye; y_evt.'];
@@ -161,4 +165,105 @@ function [t, y, te, ye, ie] = rk5(f, t0, tmin, tmax, tend, y0, other, eventFcn, 
         end
     end
     t = t(1:n_step); y = y(1:n_step,:);
+end
+
+
+function y_next = rk5_single_step(f, tn, yn, h)
+% Un singolo passo RK5 (coefficienti di Butcher, quinto ordine). Estratta dal
+% loop perche' la localizzazione degli eventi la richiama sui sub-passi:
+% duplicare gli stadi avrebbe significato due punti da tenere in sincronia.
+    k1 = h * f(tn, yn);
+    k2 = h * f(tn + 1/4*h, yn + 1/4*k1);
+    k3 = h * f(tn + 1/4*h, yn + 1/8*k1 + 1/8*k2);
+    k4 = h * f(tn + 1/2*h, yn - 1/2*k2 + k3);
+    k5 = h * f(tn + 3/4*h, yn + 3/16*k1 + 9/16*k4);
+    k6 = h * f(tn + h, yn - 3/7*k1 + 2/7*k2 + 12/7*k3 - 12/7*k4 + 8/7*k5);
+
+    y_next = yn + (7*k1 + 32*k3 + 12*k4 + 32*k5 + 7*k6) / 90;
+end
+
+
+function [t_evt, y_evt] = localize_event( ...
+        f, eventFcn, other, idx, tn, yn, h, val_lo, val_hi, y_hi)
+% Localizza il crossing della componente idx della funzione evento dentro il
+% bracket [tn, tn+h], integrando un sub-passo RK5 da (tn,yn) per ogni
+% tentativo -- NON interpolando fra i due estremi (rif. commento nel corpo di
+% rk5.m sul perche').
+%
+% Metodo: secante safeguarded (Illinois). Il bracket viene sempre mantenuto
+% (l'iterato che non cambia segno viene sostituito), quindi la convergenza e'
+% garantita anche se la funzione evento non e' monotona nel passo, mentre sui
+% casi lisci -- la norma qui -- converge in poche iterazioni invece delle ~21
+% della bisezione pura su un bracket di 2 s.
+%
+% Tolleranza: tol_t sul bracket temporale. 1e-6 s a |v| ~ 8 km/s vale ~8 mm di
+% errore di posizione, cioe' 6 ordini di grandezza sotto la tolleranza di
+% missione (opts.tol_con, 3% del target = ordine 10 km). Il cap di iterazioni
+% e' una rete di sicurezza (con Illinois non si arriva mai al cap sui casi
+% lisci), non un parametro di taratura.
+    tol_t = 1.0e-6;
+    max_iter = 40;
+
+    a = 0.0;         fa = val_lo;     % estremo sinistro (tn), valore noto
+    b = h;           fb = val_hi;     % estremo destro (tn+h), valore noto
+    y_b = y_hi;
+
+    % migliore stima corrente: l'estremo con |valore| minore, cosi' che anche
+    % un'uscita anticipata restituisca il punto piu' vicino al crossing
+    if abs(fa) <= abs(fb)
+        s_best = a;  y_best = yn;
+    else
+        s_best = b;  y_best = y_b;
+    end
+
+    for it = 1:max_iter
+        if (b - a) <= tol_t
+            break
+        end
+
+        % secante sul bracket, con clip di sicurezza dentro (a,b): se la
+        % secante propone un punto degenere (funzione piatta o estremi
+        % coincidenti) si ripiega sulla bisezione.
+        if fb ~= fa
+            s = a + (b - a) * fa / (fa - fb);
+        else
+            s = 0.5 * (a + b);
+        end
+        margin = 0.01 * (b - a);
+        if ~isfinite(s) || s <= a + margin || s >= b - margin
+            s = 0.5 * (a + b);
+        end
+
+        y_s = rk5_single_step(f, tn, yn, s);
+        vals = eventFcn(tn + s, y_s, other);
+        fs = vals(idx);
+
+        if abs(fs) <= abs(fa) && abs(fs) <= abs(fb)
+            s_best = s;  y_best = y_s;
+        end
+
+        if fs == 0
+            t_evt = tn + s;  y_evt = y_s;
+            return
+        end
+
+        if (fa < 0) == (fs < 0)
+            % stesso segno di a -> il crossing sta in [s, b]
+            a = s;  fa = fs;
+            fb = fb * 0.5;          % Illinois: sgonfia l'estremo fermo
+        else
+            b = s;  fb = fs;  y_b = y_s;
+            fa = fa * 0.5;
+        end
+    end
+
+    if (b - a) <= tol_t
+        % bracket chiuso: si prende l'estremo destro, che e' il primo istante
+        % in cui l'evento risulta avvenuto (stessa convenzione di ode45)
+        y_evt = y_b;
+        t_evt = tn + b;
+    else
+        y_evt = y_best;
+        t_evt = tn + s_best;
+    end
 end

@@ -1,5 +1,6 @@
 function [v_final, dv_delivered, residual_mass, ...
-          apogee_reached, perigee_reached, inclination_reached] = ...
+          apogee_reached, perigee_reached, inclination_reached, ...
+          dv_required, dv_available] = ...
           injection_target_orbit( ...
               r0, v0, m0, available_propellant, ...
               apogee_target, perigee_target, inclination_target, ...
@@ -40,6 +41,21 @@ function [v_final, dv_delivered, residual_mass, ...
 %   apogee_reached        [m]             achieved altitude above ENV.Req
 %   perigee_reached       [m]             achieved altitude above ENV.Req
 %   inclination_reached   [rad]           achieved inclination
+%   dv_required           [m/s]           delta-v needed to reach the target
+%   dv_available          [m/s]           delta-v the residual propellant can
+%                                         deliver (Tsiolkovsky). The pair is
+%                                         exported so that the external
+%                                         optimizer can constrain the mission
+%                                         with the INEQUALITY that actually
+%                                         limits it, dv_required <=
+%                                         dv_available, instead of relying on
+%                                         the terminal equalities alone (which
+%                                         this routine satisfies BY
+%                                         CONSTRUCTION whenever the propellant
+%                                         is sufficient, and saturates
+%                                         otherwise). Rif. solver_project
+%                                         CLAUDE.md S11 Fase 5 / real_case/
+%                                         diagnostic_plan.md (T1).
 %
 % NOTES
 %   - The maneuver is impulsive.
@@ -54,10 +70,33 @@ function [v_final, dv_delivered, residual_mass, ...
     r0 = r0(:);
     v0 = v0(:);
 
-    required_delta_v = eval_injection_delta_v( ...
-        r0, v0, apogee_target, perigee_target, inclination_target, ENV);
+    % Proiezione radiale del punto di burn sull'intervallo ammissibile
+    % [rp_target, ra_target], usata SOLO per calcolare il delta-v richiesto.
+    % Serve perche' una manovra IMPULSIVA cambia la velocita' ma non la
+    % posizione: il punto di burn deve appartenere all'orbita target,
+    % altrimenti (target circolare) il problema geometrico non ha soluzione.
+    % validate_inputs ammette uno scarto fino a radius_tolerance, che e'
+    % errore di localizzazione dell'evento di apogeo (vedi nota la' sopra),
+    % e qui lo si assorbe proiettando.
+    % IMPORTANTE: l'orbita RAGGIUNTA e' valutata sul punto VERO (r0, non
+    % r0_burn) con la v_final ottenuta -- cosi' lo scarto non viene nascosto:
+    % ricompare nei residui h e la feasibility resta giudicata sul residuo
+    % reale (rif. CLAUDE.md S7: non mascherare un errore dentro il modello).
+    % Scarti maggiori della tolleranza NON vengono proiettati: restano un
+    % errore, che simulator.m/traj_problem.m trattano come missione non
+    % chiusa (violazione pagata dai residui h).
+    r_norm_burn = norm(r0);
+    r_admissible = min(max(r_norm_burn, ENV.Req + perigee_target), ...
+                       ENV.Req + apogee_target);
+    r0_burn = r0;
+    if r_admissible ~= r_norm_burn
+        r0_burn = r0 * (r_admissible / r_norm_burn);
+    end
 
-    [v_final, dv_delivered, residual_mass] = ...
+    required_delta_v = eval_injection_delta_v( ...
+        r0_burn, v0, apogee_target, perigee_target, inclination_target, ENV);
+
+    [v_final, dv_delivered, residual_mass, dv_required, dv_available] = ...
         deliver_delta_v( ...
             v0, required_delta_v, m0, available_propellant, ue);
 
@@ -149,9 +188,34 @@ function validate_inputs( ...
             'The norm of r0 must be greater than zero.');
     end
 
-    radius_tolerance = max( ...
-        1.0e-3, ...
-        1.0e-10 * max([r_norm, rp_target, ra_target]));
+    % Tolleranza sul raggio del punto di burn. Il valore precedente,
+    % max(1e-3, 1e-10*r), era di fatto 1 mm: sufficiente solo per un target
+    % ELLITTICO, dove [rp,ra] e' un intervallo ampio (200 km in
+    % input/validation_test). Con un target CIRCOLARE (input/validation_test_2:
+    % perigeo = apogeo = 400 km) l'intervallo degenera in un PUNTO e il
+    % controllo diventa una lama: il punto di fine coast kepleriano (fase 7 di
+    % simulator.m) arriva a 0.38 m dal raggio target -- 5.6e-8 in relativo,
+    % puro errore di localizzazione dell'evento di apogeo -- e la routine
+    % rifiutava l'intero caso. Misurato: il dataset validation_test_2 falliva
+    % anche nella configurazione nuda del suo readme (che era stata validata
+    % con ode45, prima di rk5.m: cadeva dentro il millimetro per caso).
+    % Il valore riflette l'ACCURATEZZA della localizzazione dell'evento di
+    % apogeo, non una tolleranza fisica: con un target circolare il punto di
+    % fine coast dovrebbe cadere esattamente su ra_target per costruzione
+    % (fase 6 innesca quando l'apogeo osculante raggiunge il target, fase 7
+    % propaga fino all'apogeo), quindi tutto lo scarto e' errore numerico.
+    % REQUISITO (utente, 2026-09-09): l'accuratezza del cross-over di apogeo
+    % deve essere MIGLIORE della tolleranza ammessa dalla funzione di costo.
+    % Soddisfatto rifinendo la localizzazione degli eventi in rk5.m (secante
+    % safeguarded con ri-integrazione RK5 del sub-passo, al posto
+    % dell'interpolazione lineare precedente): scarto misurato 0.4 mm su
+    % reference_LV e 4-8 mm su validation_test_2 (era rispettivamente ~0.4 m
+    % e fino a 1613 m, quest'ultimo dello stesso ordine della tolleranza di
+    % missione -- inaccettabile). 1 m e' quindi >100x sopra lo scarto
+    % osservato (margine, non un valore al limite) e ~4 ordini di grandezza
+    % SOTTO la tolleranza di missione dell'ottimizzatore (opts.tol_con = 3%
+    % del target = 12 km su questo dataset).
+    radius_tolerance = 1.0;
 
     if r_norm < rp_target - radius_tolerance || ...
        r_norm > ra_target + radius_tolerance
@@ -165,7 +229,7 @@ function validate_inputs( ...
 end
 
 
-function [v_final, dv_delivered, residual_mass] = ...
+function [v_final, dv_delivered, residual_mass, dv_required, dv_available] = ...
     deliver_delta_v( ...
         v0, required_delta_v, m0, available_propellant, ue)
 %DELIVER_DELTA_V Deliver the requested or maximum available delta-v.

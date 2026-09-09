@@ -21,3 +21,6 @@ real_case/*.pid
 Thumbs.db
 *~
 .*.swp
+
+# Backup manuali del seed di continuazione (artefatti di test)
+real_case/warm_start_*.bak

@@ -1,4 +1,4 @@
-function [f, cineq, ceq] = traj_cost(x, other)
+function [f, cineq, ceq, prop_residual] = traj_cost(x, other)
 % TRAJ_COST  Adapter tra il contratto di solver_project (CLAUDE.md S4:
 %   [f, cineq, ceq] = traj_cost(x, other)) e TSTO/source/traj_problem.m
 %   (repository ESTERNO, ../TSTO, simulatore del lanciatore a due stadi
@@ -96,7 +96,10 @@ function [f, cineq, ceq] = traj_cost(x, other)
         fclose(fid);
     end
 
-    [f, cineq, ceq] = traj_problem(x, other);
+    % 4a uscita: propellente residuo stadio 2 (diagnostica per il metodo di
+    % continuazione, rif. run_continuation.m). Il solver ne chiede 3 e non la
+    % vede mai: il contratto di CLAUDE.md S4 resta invariato.
+    [f, cineq, ceq, prop_residual] = traj_problem(x, other);
 
     % --- log END ------------------------------------------------------
     fid = fopen(log_path, 'a');

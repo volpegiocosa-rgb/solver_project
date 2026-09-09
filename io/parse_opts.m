@@ -112,6 +112,20 @@ function opts = parse_opts(opts, n)
     defaults.seed = 1;
     defaults.restart_ipop = true;
     defaults.max_restarts = 9;
+    % restart_mode (decisione utente 2026-09-09): come si sceglie il nuovo
+    % centro a ogni restart IPOP.
+    %   'auto'   -> caldo (attorno al miglior punto AMMISSIBILE noto) se ne
+    %               esiste uno, Sobol+jitter altrimenti. Default: ripartire da
+    %               Sobol ha senso solo quando non si sa ancora nulla.
+    %   'sobol'  -> sempre Sobol+jitter (comportamento pre-2.0.0).
+    %   'warm'   -> sempre caldo se possibile (Sobol solo come fallback).
+    % Rif. core/ipop_restart.m per la misura che ha motivato il cambio.
+    defaults.restart_mode = 'auto';
+    % Ampiezza del jitter del restart caldo, in spazio normalizzato.
+    % TODO: PROVVISORIO -- non calibrato (scelto ~3x il sigma0 tipico dei run
+    % di continuazione, 0.03, per dare margine di fuga da uno stallo senza
+    % perdere il bacino).
+    defaults.restart_jitter = 0.1;
     % CALIBRATO (Fase 3): validato, non solo ereditato. Su g13 (n=5, 10 seed,
     % max_iter=2500) il numero di restart usati dai run che raggiungono
     % l'ottimo globale varia da 5 a 9 -- il tetto a 9 non e' mai risultato

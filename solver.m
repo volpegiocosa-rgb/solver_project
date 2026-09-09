@@ -38,13 +38,27 @@ function result = solver(fun, bounds, opts)
     % === parsing/validazione opts + default provvisori (delegato a /io) ===
     opts = parse_opts(opts, n);
 
-    % === guess utente in spazio fisico -> normalizzato (S4: init_mean lavora in [0,1]) ===
+    % === guess utente in spazio fisico -> normalizzato -> spazio NON vincolato ===
+    % (S4: init_mean lavora in [0,1]; il motore lavora invece nello spazio non
+    % vincolato del bound handling, vedi sotto -- quindi x0 va portato la',
+    % altrimenti xmean non corrisponderebbe al punto chiesto dall'utente vicino
+    % ai bordi, dove la trasformazione non e' l'identita'.)
     if ~isempty(opts.x0)
-        opts.x0 = normalize(opts.x0, bounds);
+        opts.x0 = bound_transform_inv(normalize(opts.x0, bounds));
     end
 
-    % === normalizzazione problema in [0,1] (delegato a /io) ===
-    fun_norm = @(xn) fun(denormalize(xn, bounds), opts.other);
+    % === normalizzazione problema in [0,1] + bound handling (delegato a /io) ===
+    % fun_box : valuta un punto GIA' dentro il box [0,1]^n (usato dal polish e
+    %           dalla ri-valutazione finale, che lavorano in spazio box).
+    % fun_norm: quella che vede il MOTORE. Il motore campiona in uno spazio non
+    %           vincolato (cmaes_ask.m non clippa, per l'invarianza affine di
+    %           S5.2) e bound_transform lo riporta nel box con mirroring +
+    %           patch quadratiche (rif. io/bound_transform.m per il perche':
+    %           il clip precedente collassava tutti i punti fuori dominio sullo
+    %           stesso bordo, azzerando il segnale di selezione -- misurato sul
+    %           caso reale, real_case/diagnostic_plan.md T2).
+    fun_box  = @(xb) fun(denormalize(xb, bounds), opts.other);
+    fun_norm = @(xn) fun_box(bound_transform(xn));
 
     % === ranking per il motore: ARCH (delegato a /constraints) ===
     % con_fun estrae solo [cineq, ceq] da fun_norm, per arch_repair (Fase 4) e
@@ -71,7 +85,16 @@ function result = solver(fun, bounds, opts)
     % prima (a differenza del TODO originale che operava su x_best_phys).
     % No-op per costruzione se non vincolato (tol_con/ceq vuoti, es. sphere) o gia'
     % feasible entro tol_con: nessuna chiamata SQP in quei casi (rif. arch_repair.m).
-    con_fun = @(xn) local_con_only(fun_norm, xn);
+    % I punti restituiti dal motore vivono nello spazio NON vincolato: vanno
+    % riportati nel box PRIMA del polish (arch_repair assume dominio [0,1]^n) e
+    % prima di denormalize. Dopo questa riga x_best/x_best_ranked sono in spazio
+    % box, quindi il polish e la ri-valutazione usano fun_box, non fun_norm (che
+    % ri-applicherebbe la trasformazione a un punto gia' trasformato: identita'
+    % solo nella parte interna del dominio, NON vicino ai bordi).
+    result.x_best = bound_transform(result.x_best);
+    result.x_best_ranked = bound_transform(result.x_best_ranked);
+
+    con_fun = @(xb) local_con_only(fun_box, xb);
     result.x_best = feasibility_polish(result.x_best, con_fun, opts.tol_con);
 
     % === risultato anche in spazio fisico (post-polish) ===
@@ -87,7 +110,7 @@ function result = solver(fun, bounds, opts)
     % scalare, S6): duplicata qui per coerenza, non centralizzata in una funzione
     % condivisa per non introdurre un'astrazione per due soli usi (S7, no premature
     % abstraction).
-    [f_polished, cineq_polished, ceq_polished] = fun_norm(result.x_best);
+    [f_polished, cineq_polished, ceq_polished] = fun_box(result.x_best);
     feasible_polished = true;
     if ~isempty(cineq_polished)
         feasible_polished = feasible_polished && all(cineq_polished <= 0);
@@ -99,8 +122,8 @@ function result = solver(fun, bounds, opts)
     result.feasible = feasible_polished;
 end
 
-function [cineq, ceq] = local_con_only(fun_norm, xn)
+function [cineq, ceq] = local_con_only(fun_box, xb)
 % Estrae solo [cineq, ceq] da fun_norm, scartando f: separazione dei ruoli per
 % arch_repair (S4), che non deve conoscere l'obiettivo -- ripara solo sui vincoli.
-    [~, cineq, ceq] = fun_norm(xn);
+    [~, cineq, ceq] = fun_box(xb);
 end

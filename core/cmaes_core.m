@@ -86,6 +86,34 @@ function result = cmaes_core(fun_norm, n, opts, fun_ranked)
     f_hist_seg = zeros(max_iter, 1);
     iter_seg = 0;
 
+    % --- valutazione del punto iniziale (1 valutazione) ------------------
+    % CMA-ES campiona ATTORNO a xmean e non valuta MAI xmean: il guess
+    % dell'utente (opts.x0) non entrava quindi in alcun tracking. Due
+    % conseguenze misurate sul caso reale (rif. CLAUDE.md S11 Fase 5,
+    % sessione "procedura di continuazione"):
+    %   1. con un x0 AMMISSIBILE, un run che non trovava punti ammissibili
+    %      restituiva un punto PEGGIORE di quello fornito dall'utente;
+    %   2. il restart caldo (ipop_restart.m) non poteva attivarsi, perche'
+    %      x_best_feas era vuoto -> ricadeva su Sobol proprio nel caso in cui
+    %      la conoscenza migliore disponibile era x0.
+    % Costa 1 valutazione e NON altera l'algoritmo: xmean non entra nel
+    % ranking ne' nella popolazione, solo nei tracker best/best_feasible.
+    [f0, cineq0, ceq0] = fun_norm(xmean0);
+    state.counteval = state.counteval + 1;
+    f_best = f0;
+    x_best = xmean0;
+    feas0 = true;
+    if ~isempty(cineq0)
+        feas0 = feas0 && all(cineq0 <= 0);
+    end
+    if ~isempty(ceq0)
+        feas0 = feas0 && all(abs(ceq0) <= opts.tol_con(:));
+    end
+    if feas0
+        f_best_feas = f0;
+        x_best_feas = xmean0;
+    end
+
     iter = 0;
     stop_reason = '';
 
@@ -206,7 +234,9 @@ function result = cmaes_core(fun_norm, n, opts, fun_ranked)
             break
         elseif converged
             if opts.restart_ipop && state.n_restarts < opts.max_restarts
-                state = ipop_restart(state, opts);
+                % Restart CALDO se un punto ammissibile e' gia' noto,
+                % Sobol altrimenti (rif. ipop_restart.m per il perche').
+                state = ipop_restart(state, opts, x_best_feas);
                 iter_seg = 0;
                 f_best_feas_seg = Inf;
                 continue
