@@ -4,3 +4,24 @@
 *.oct
 *.mod
 *.o
+
+# Libreria Fortran standalone e test dimostrativo (source/native/):
+# rigenerati da gfortran/gcc, stesso motivo di sopra -- rpath assoluto
+# al checkout, non portabile, va ricompilata dopo ogni clone.
+*.so
+source/native/test_standalone
+
+# Cross-build Windows (source/native/, sessione "DLL Windows/MATLAB",
+# rif. solver_project/CLAUDE.md S11 Fase 5): tsto_native.dll e la import
+# library sono rigenerabili da eom_core.f90 col cross-compilatore
+# MinGW-w64 (vedi README.md), gli .mexw64 vanno compilati SU Windows con
+# MATLAB (mex) -- nessuno dei due e' portabile fra ambienti, stesso
+# principio di *.oct/*.so sopra. tsto_native.def (sorgente: elenco
+# simboli esportati) e i tre shim *_mex.cpp restano invece TRACCIATI:
+# non sono artefatti di build, sono scritti a mano.
+*.dll
+*.dll.a
+*.mexw64
+*.mexa64
+*.mexmaci64
+source/native/test_standalone_win.exe

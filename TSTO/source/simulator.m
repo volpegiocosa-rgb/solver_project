@@ -119,6 +119,95 @@ function [RES, other] = simulator(config)
 	other.INJ = struct('reached', false, 'dv_required', NaN, ...
 	                   'dv_available', NaN, 'dv_margin', NaN);
 
+	% ---------------------------------------------------------------
+	% 3-fast. Fast-path nativo per le fasi 1-6 (rif. CLAUDE.md S11 Fase 5,
+	% sessione "TSTO libreria standalone"): tsto_phases16_native (shim
+	% oct-file su libtsto_native.so, porting Fortran di questo S3 +
+	% rk5.m + kinematic_step.m) sostituisce l'intero loop Octave sulle
+	% fasi 1-6 con UNA chiamata nativa, eliminando l'orchestrazione
+	% interpretata (gia' native solo eom.m/guidance.m/phase_event.m,
+	% chiamati pero' ad ogni passo RK5/localizzazione evento da codice
+	% Octave). La fase 7-8 (injection_target_orbit.m) resta INVARIATA
+	% sotto (decisione utente: non hot-path, 319 righe di meccanica
+	% orbitale closed-form, rischio non giustificato dal guadagno).
+	%
+	% Attivo solo con config.minimal_output=true: e' l'unico consumatore
+	% reale (traj_problem.m durante l'ottimizzazione) e l'unico caso in
+	% cui non serve la storia T/Y completa (tsto_phases16_f non la
+	% accumula, rif. header del sorgente Fortran -- solo lo stato
+	% finale). Con minimal_output=false (debug/plotting via
+	% create_output.m) si resta sul path interpretato sotto, che produce
+	% comunque la storia completa.
+	use_native_fastpath = isfield(config, 'minimal_output') && config.minimal_output ...
+	                      && exist('tsto_phases16_native', 'file') == 3;
+
+	if isfield(config, 'minimal_output') && config.minimal_output && ~use_native_fastpath
+		% file .oct mancante (build non eseguita): fallback al path
+		% interpretato sotto, corretto ma molto piu' lento (rif.
+		% real_case/diagnostic_plan.md: "ogni valutazione girava sul
+		% fallback interpretato, 8.4s invece di ~0.1s", passato
+		% inosservato una volta) -- avviso una tantum per sessione,
+		% non ad ogni valutazione (eviterebbe log-spam sull'ottimizzatore).
+		warn_once_native_fastpath_missing ();
+	end
+
+	if use_native_fastpath
+		other.GUI.active_stage = 1;
+		other.isignite         = true;
+		other.phase            = 1;
+
+		[scalars, InOl, env_alt, env_rho, env_c, env_p, aer_mach, aer_aoa, aer_cd] = ...
+			build_eom_native_params(other);
+
+		frac = 0.05;   % TODO: PROVVISORIO -- stesso default di kinematic_step.m
+		if isfield(other, 'STEP') && isfield(other.STEP, 'frac')
+			frac = other.STEP.frac;
+		end
+		tol_t_evt    = 1.0e-6;   % stesso default di rk5.m/localize_event
+		max_iter_evt = 40;       % stesso default di rk5.m/localize_event
+
+		[y_end, t_end, native_status] = tsto_phases16_native(y0, t0, scalars, InOl, ...
+			env_alt, env_rho, env_c, env_p, aer_mach, aer_aoa, aer_cd, ...
+			config.tmin, config.tmax, config.tmax_phase, frac, tol_t_evt, max_iter_evt);
+
+		y_start = y_end;
+		t_start = t_end;
+
+		% Endpoint unico accumulato in T/Y (nessuna storia interna alle
+		% fasi 1-6, rif. sopra): sufficiente per RES minimal_output
+		% (legge solo Y(end,:)) e per non rompere l'accumulo T/Y usato
+		% (invariato) dalla fase 7/8 sotto, che vi appende le proprie righe.
+		T = [T; t_start];                     %#ok<AGROW>
+		Y = [Y; y_start.'];                   %#ok<AGROW>
+		phase_track = [phase_track; 6];       %#ok<AGROW>
+
+		switch native_status
+			case 0
+				% raggiunta fase 7 normalmente (evento "apogeo target" in
+				% fase 6). other.GUI.last_pitch/last_yaw/pitch_at_transition
+				% non servono oltre la fase 6 (case 3 di guidance.m non e'
+				% piu' richiamato da fase 7/8, coerente col path
+				% interpretato: S3g li aggiorna solo per il consumo interno
+				% della fase successiva) -- non ricostruiti dal risultato nativo.
+				other.GUI.active_stage = 2;
+				phase = 7;
+			case 1
+				termination_reason = 'END_CRASH';
+				phase = 9;   % esce dal while sotto (phase <= 8 falso)
+			case 2
+				termination_reason = 'END_PROP2';
+				phase = 9;
+			otherwise
+				error('simulator:nativeFastPathFailed', ...
+				      ['tsto_phases16_native ha restituito status=%d (errore interno: ' ...
+				       'nessun evento entro tmax_phase, oppure troppi passi RK5/troppe ' ...
+				       'transizioni di fase -- rete di sicurezza, verificare ' ...
+				       'tmin/tmax/tmax_phase). Nessun fallback automatico: e'' un bug o ' ...
+				       'una configurazione palesemente inadeguata, non un esito normale ' ...
+				       'da assorbire silenziosamente.'], native_status);
+		end
+	end
+
 	while phase <= 8
 		iteration = iteration + 1;
 		if iteration > max_iterations
@@ -433,5 +522,26 @@ function [RES, other] = simulator(config)
 			plotter(T, Y, RES, config.input_dir);
 			write_log(T, Y, RES, termination_reason, config.input_dir);
 		end
+	end
+end
+
+function warn_once_native_fastpath_missing ()
+	% warn_once_native_fastpath_missing  Avviso UNA TANTUM per sessione
+	%   Octave (non ad ogni valutazione) quando tsto_phases16_native
+	%   (fast-path fasi 1-6, native/tsto_phases16_oct.cc + native/
+	%   libtsto_native.so) non e' compilato e si ricade sul path
+	%   interpretato -- corretto ma ~150-400x piu' lento (rif.
+	%   real_case/diagnostic_plan.md). 'persistent' e' stato locale a
+	%   questa funzione, NON una variabile globale (CLAUDE.md §4):
+	%   nessuna condivisione di stato con altre funzioni.
+	persistent already_warned
+	if isempty(already_warned)
+		warning('simulator:nativeFastPathMissing', ...
+		        ['tsto_phases16_native non trovato sul path: si ricade sul loop ' ...
+		         'fasi 1-6 interpretato (Octave), ~150-400x piu'' lento. Compilare ' ...
+		         'native/libtsto_native.so + native/tsto_phases16_oct.cc ' ...
+		         '(vedi TSTO/source/native/README.md). Questo avviso compare una ' ...
+		         'sola volta per sessione Octave.']);
+		already_warned = true;
 	end
 end

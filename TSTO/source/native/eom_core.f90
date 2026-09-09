@@ -44,10 +44,12 @@
 
 module eom_core_mod
   use, intrinsic :: iso_c_binding
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
   public :: eom_native_f
   public :: phase_event_native_f
+  public :: tsto_phases16_f
 
   real(c_double), parameter :: PI_  = 3.14159265358979323846d0
   real(c_double), parameter :: HALFPI_ = 1.57079632679489661923d0
@@ -519,5 +521,382 @@ contains
       n_out = 0
     end select
   end subroutine phase_event_native_f
+
+  subroutine rk5_step_native(t, y, h, s, InOl, n_env, env_alt, env_rho, env_c, env_p, &
+       n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, y_next)
+    ! Un singolo passo RK5 (stadi di Butcher, righe 175-182 di rk5.m),
+    ! usando eom_native_f come 'f'. Fattorizzata perche' richiamata sia
+    ! dal loop principale sia dalla localizzazione eventi (sotto-passi).
+    real(c_double), intent(in) :: t, y(8), h
+    real(c_double), intent(in) :: s(38), InOl(3,3)
+    integer(c_int), intent(in) :: n_env, n_mach, n_aoa
+    real(c_double), intent(in) :: env_alt(n_env), env_rho(n_env), env_c(n_env), env_p(n_env)
+    real(c_double), intent(in) :: aer_mach(n_mach), aer_aoa(n_aoa), aer_cd(n_mach, n_aoa)
+    real(c_double), intent(out) :: y_next(8)
+
+    real(c_double) :: k1(8), k2(8), k3(8), k4(8), k5(8), k6(8), dy(8)
+
+    call eom_native_f(t, y, s(1:31), InOl, n_env, env_alt, env_rho, env_c, env_p, &
+         n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, dy)
+    k1 = h * dy
+
+    call eom_native_f(t + 0.25d0*h, y + 0.25d0*k1, s(1:31), InOl, n_env, env_alt, env_rho, env_c, env_p, &
+         n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, dy)
+    k2 = h * dy
+
+    call eom_native_f(t + 0.25d0*h, y + 0.125d0*k1 + 0.125d0*k2, s(1:31), InOl, n_env, env_alt, env_rho, env_c, env_p, &
+         n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, dy)
+    k3 = h * dy
+
+    call eom_native_f(t + 0.5d0*h, y - 0.5d0*k2 + k3, s(1:31), InOl, n_env, env_alt, env_rho, env_c, env_p, &
+         n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, dy)
+    k4 = h * dy
+
+    call eom_native_f(t + 0.75d0*h, y + 0.1875d0*k1 + 0.5625d0*k4, s(1:31), InOl, n_env, env_alt, env_rho, env_c, env_p, &
+         n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, dy)
+    k5 = h * dy
+
+    call eom_native_f(t + h, y - (3.0d0/7.0d0)*k1 + (2.0d0/7.0d0)*k2 + (12.0d0/7.0d0)*k3 &
+         - (12.0d0/7.0d0)*k4 + (8.0d0/7.0d0)*k5, s(1:31), InOl, n_env, env_alt, env_rho, env_c, env_p, &
+         n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, dy)
+    k6 = h * dy
+
+    y_next = y + (7.0d0*k1 + 32.0d0*k3 + 12.0d0*k4 + 32.0d0*k5 + 7.0d0*k6) / 90.0d0
+  end subroutine rk5_step_native
+
+  subroutine localize_event_native(tn, yn, h, s, InOl, &
+       n_env, env_alt, env_rho, env_c, env_p, n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, &
+       idx, val_lo, val_hi, y_hi, tol_t, max_iter, t_evt, y_evt)
+    ! Porting di localize_event (rk5.m righe 186-269): secante
+    ! safeguarded (Illinois) sul bracket [tn, tn+h], ogni tentativo
+    ! valutato ri-integrando un sotto-passo RK5 da (tn,yn) -- non
+    ! interpolando linearmente (rif. commento nel corpo di rk5.m sul
+    ! perche': errore di posizione altrimenti dell'ordine della corda,
+    ! misurato 1613 m su validation_test_2, stesso ordine della
+    ! tolleranza di missione).
+    real(c_double), intent(in) :: tn, yn(8), h
+    real(c_double), intent(in) :: s(38), InOl(3,3)
+    integer(c_int), intent(in) :: n_env, n_mach, n_aoa
+    real(c_double), intent(in) :: env_alt(n_env), env_rho(n_env), env_c(n_env), env_p(n_env)
+    real(c_double), intent(in) :: aer_mach(n_mach), aer_aoa(n_aoa), aer_cd(n_mach, n_aoa)
+    integer(c_int), intent(in) :: idx
+    real(c_double), intent(in) :: val_lo, val_hi, y_hi(8), tol_t
+    integer(c_int), intent(in) :: max_iter
+    real(c_double), intent(out) :: t_evt, y_evt(8)
+
+    real(c_double) :: a, b, fa, fb, y_b(8), s_best, y_best(8), y_s(8)
+    real(c_double) :: ss, margin, fs
+    real(c_double) :: val(3), isterm(3), dirn(3)
+    integer(c_int) :: n_out, it
+
+    a = 0.0d0; fa = val_lo
+    b = h;     fb = val_hi
+    y_b = y_hi
+
+    if (abs(fa) <= abs(fb)) then
+      s_best = a; y_best = yn
+    else
+      s_best = b; y_best = y_b
+    end if
+
+    do it = 1, max_iter
+      if ((b - a) <= tol_t) exit
+
+      if (fb /= fa) then
+        ss = a + (b - a) * fa / (fa - fb)
+      else
+        ss = 0.5d0 * (a + b)
+      end if
+      margin = 0.01d0 * (b - a)
+      if ((.not. ieee_is_finite(ss)) .or. ss <= a + margin .or. ss >= b - margin) then
+        ss = 0.5d0 * (a + b)
+      end if
+
+      call rk5_step_native(tn, yn, ss, s, InOl, n_env, env_alt, env_rho, env_c, env_p, &
+           n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, y_s)
+      call phase_event_native_f(tn + ss, y_s, s, InOl, nint(s(16), c_int), val, isterm, dirn, n_out)
+      fs = val(idx)
+
+      if (abs(fs) <= abs(fa) .and. abs(fs) <= abs(fb)) then
+        s_best = ss; y_best = y_s
+      end if
+
+      if (fs == 0.0d0) then
+        t_evt = tn + ss; y_evt = y_s
+        return
+      end if
+
+      if ((fa < 0.0d0) .eqv. (fs < 0.0d0)) then
+        a = ss; fa = fs
+        fb = fb * 0.5d0
+      else
+        b = ss; fb = fs; y_b = y_s
+        fa = fa * 0.5d0
+      end if
+    end do
+
+    if ((b - a) <= tol_t) then
+      y_evt = y_b
+      t_evt = tn + b
+    else
+      y_evt = y_best
+      t_evt = tn + s_best
+    end if
+  end subroutine localize_event_native
+
+  subroutine rk5_native(t0_loc, y0_loc, tmin, tmax, tend, frac, s, InOl, &
+       n_env, env_alt, env_rho, env_c, env_p, n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, &
+       tol_t, max_iter_evt, t_end, y_end, fired, rk5_status)
+    ! Porting di rk5.m (righe 50-167) + kinematic_step.m: loop RK5 a
+    ! passo cinematico clippato [tmin,tmax], con detection eventi
+    ! (cambio di segno + vincolo di direzione) e localizzazione via
+    ! localize_event_native. NON accumula T/Y (rif. header del file):
+    ! solo lo stato corrente.
+    real(c_double), intent(in) :: t0_loc, y0_loc(8), tmin, tmax, tend, frac
+    real(c_double), intent(in) :: s(38), InOl(3,3)
+    integer(c_int), intent(in) :: n_env, n_mach, n_aoa
+    real(c_double), intent(in) :: env_alt(n_env), env_rho(n_env), env_c(n_env), env_p(n_env)
+    real(c_double), intent(in) :: aer_mach(n_mach), aer_aoa(n_aoa), aer_cd(n_mach, n_aoa)
+    real(c_double), intent(in) :: tol_t
+    integer(c_int), intent(in) :: max_iter_evt
+    real(c_double), intent(out) :: t_end, y_end(8)
+    integer(c_int), intent(out) :: fired, rk5_status
+
+    real(c_double) :: tn, yn(8), h, y_next(8), t_next, dy(8)
+    real(c_double) :: val_old(3), val_new(3), isterm(3), dirn(3)
+    real(c_double) :: v, a, t_evt, y_evt(8)
+    integer(c_int) :: n_out, idx, step_count, max_steps, phase_i
+    logical :: terminated, is_correct_dir
+
+    tn = t0_loc
+    yn = y0_loc
+    max_steps = ceiling((tend - t0_loc) / tmin) + 10
+    step_count = 0
+    fired = 0
+    rk5_status = 0
+    phase_i = nint(s(16), c_int)
+
+    call phase_event_native_f(tn, yn, s, InOl, phase_i, val_old, isterm, dirn, n_out)
+
+    do
+      if (tn >= tend) then
+        rk5_status = 1   ! nessun evento entro tmax_phase (simulator:noEventTriggered)
+        t_end = tn; y_end = yn
+        return
+      end if
+
+      step_count = step_count + 1
+      if (step_count > max_steps) then
+        rk5_status = 2   ! troppi passi (rk5:tooManySteps)
+        t_end = tn; y_end = yn
+        return
+      end if
+
+      call eom_native_f(tn, yn, s(1:31), InOl, n_env, env_alt, env_rho, env_c, env_p, &
+           n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, dy)
+      v = norm3(yn(4:6))
+      a = norm3(dy(4:6))
+      if (a > 1.0d-6) then
+        h = frac * (v / a)
+      else
+        h = tmax   ! tau "infinito": stesso esito di frac*Inf poi clippato a tmax
+      end if
+      if (h < tmin) h = tmin
+      if (h > tmax) h = tmax
+      if (tn + h > tend) h = tend - tn
+
+      call rk5_step_native(tn, yn, h, s, InOl, n_env, env_alt, env_rho, env_c, env_p, &
+           n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, y_next)
+      t_next = tn + h
+
+      call phase_event_native_f(t_next, y_next, s, InOl, phase_i, val_new, isterm, dirn, n_out)
+
+      terminated = .false.
+      do idx = 1, n_out
+        if (val_old(idx)*val_new(idx) <= 0.0d0 .and. val_old(idx) /= val_new(idx)) then
+          is_correct_dir = (dirn(idx) == 0.0d0) .or. &
+               (dirn(idx) == 1.0d0 .and. val_new(idx) > val_old(idx)) .or. &
+               (dirn(idx) == -1.0d0 .and. val_new(idx) < val_old(idx))
+          if (is_correct_dir) then
+            call localize_event_native(tn, yn, h, s, InOl, &
+                 n_env, env_alt, env_rho, env_c, env_p, n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, &
+                 idx, val_old(idx), val_new(idx), y_next, tol_t, max_iter_evt, t_evt, y_evt)
+            fired = idx
+            if (isterm(idx) > 0.5d0) then
+              t_end = t_evt
+              y_end = y_evt
+              rk5_status = 0
+              terminated = .true.
+              exit
+            end if
+          end if
+        end if
+      end do
+
+      if (terminated) return
+
+      tn = t_next
+      yn = y_next
+      val_old = val_new
+    end do
+  end subroutine rk5_native
+
+  subroutine tsto_phases16_f(y0, t0, s_base, InOl, &
+       n_env, env_alt, env_rho, env_c, env_p, &
+       n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, &
+       tmin, tmax, tmax_phase, frac, tol_t, max_iter_evt, &
+       y_final, t_final, status) bind(C, name="tsto_phases16_f")
+    ! Porting di simulator.m S3 (fasi 1-6) + rk5.m + kinematic_step.m.
+    ! Rif. solver_project/CLAUDE.md S11 Fase 5, sessione "TSTO libreria
+    ! standalone": elimina l'orchestrazione Octave residua attorno a
+    ! eom_native_f/phase_event_native_f (gia' native), che oggi gira ad
+    ! ogni passo RK5/localizzazione evento. Fase 7-8
+    ! (injection_target_orbit.m) restano in Octave per decisione utente
+    ! (costo O(1) per valutazione, non hot-path).
+    !
+    ! Semplificazione deliberata rispetto a rk5.m: NON accumula la
+    ! storia T/Y (serve solo a create_output.m per il reporting
+    ! completo, mai usato durante l'ottimizzazione: traj_problem.m usa
+    ! sempre config.minimal_output=true, che legge solo Y(end,:)).
+    !
+    ! Layout di s_base(38): IDENTICO a build_eom_native_params.m
+    ! (condiviso con eom_native_f/phase_event_native_f). Gli elementi
+    ! 14 (active_stage), 15 (isignite), 16 (phase), 21 (last_pitch),
+    ! 22 (last_yaw), 25 (pitch_at_transition) sono qui SOVRASCRITTI ad
+    ! ogni fase dalla macchina a stati (equivalente a
+    ! other.GUI.*/other.isignite/other.phase mutati da simulator.m
+    ! S3a/3b/3g/3h): s_base li fornisce solo come valore INIZIALE (fase
+    ! 1, stadio 1, motore acceso), non letti da guidance_native in fase 1.
+    !
+    ! status di uscita (mappato 1:1 su termination_reason di
+    ! simulator.m S3h):
+    !   0 = raggiunto il boundary fase6->fase7 (evento 1 in fase 6,
+    !       "apogeo target raggiunto"): il chiamante Octave deve
+    !       proseguire con fase 7-8 (flight_to_apogee.m +
+    !       injection_target_orbit.m), invariate.
+    !   1 = END_CRASH (quota=0 in una qualunque fase 1-6)
+    !   2 = END_PROP2 (propellente stadio2 esaurito in fase 6 prima di
+    !       raggiungere l'apogeo target)
+    !   3 = errore interno (nessun evento entro tmax_phase, oppure
+    !       troppi passi RK5 o troppe transizioni di fase: rete di
+    !       sicurezza, equivalente agli error() di
+    !       simulator.m:noEventTriggered / rk5:tooManySteps /
+    !       simulator:tooManyPhaseIterations, che qui non possono
+    !       essere sollevati come eccezioni Octave)
+    real(c_double), intent(in) :: y0(8)
+    real(c_double), intent(in), value :: t0
+    real(c_double), intent(in) :: s_base(38)
+    real(c_double), intent(in) :: InOl(3,3)
+    integer(c_int), intent(in), value :: n_env
+    real(c_double), intent(in) :: env_alt(n_env), env_rho(n_env), env_c(n_env), env_p(n_env)
+    integer(c_int), intent(in), value :: n_mach, n_aoa
+    real(c_double), intent(in) :: aer_mach(n_mach), aer_aoa(n_aoa)
+    real(c_double), intent(in) :: aer_cd(n_mach, n_aoa)
+    real(c_double), intent(in), value :: tmin, tmax, tmax_phase, frac, tol_t
+    integer(c_int), intent(in), value :: max_iter_evt
+    real(c_double), intent(out) :: y_final(8)
+    real(c_double), intent(out) :: t_final
+    integer(c_int), intent(out) :: status
+
+    real(c_double) :: s(38)
+    integer(c_int) :: phase, fired, iteration, rk5_status
+    real(c_double) :: t_start, y_start(8), t_ph_end, y_ph_end(8), tend
+    real(c_double) :: relative_speed(3), u_end(3), last_pitch, last_yaw
+
+    s = s_base
+    t_start = t0
+    y_start = y0
+    phase = 1
+    status = 3   ! sentinella: sovrascritta prima di ogni return "normale"
+
+    do iteration = 1, 14
+      ! --- 3a. staging (separazione 1' stadio + fairing a fine fase 4) ---
+      if (phase <= 4) then
+        s(14) = 1.0d0
+      else
+        if (nint(s(14)) == 1) then
+          y_start(7) = y_start(7) - s(33) - s(36)   ! Minert1 + Mfairing
+        end if
+        s(14) = 2.0d0
+      end if
+
+      ! --- 3b. motore acceso/spento; fase corrente ------------------------
+      if (phase == 5) then
+        s(15) = 0.0d0
+      else
+        s(15) = 1.0d0
+      end if
+      s(16) = dble(phase)
+
+      ! --- 3e. integrazione fase corrente (rk5.m) --------------------------
+      tend = t_start + tmax_phase
+      call rk5_native(t_start, y_start, tmin, tmax, tend, frac, s, InOl, &
+           n_env, env_alt, env_rho, env_c, env_p, n_mach, n_aoa, aer_mach, aer_aoa, aer_cd, &
+           tol_t, max_iter_evt, t_ph_end, y_ph_end, fired, rk5_status)
+
+      if (rk5_status /= 0) then
+        status = 3
+        y_final = y_ph_end
+        t_final = t_ph_end
+        return
+      end if
+
+      t_start = t_ph_end
+      y_start = y_ph_end
+
+      ! --- 3g. memoria di guida (last_pitch/last_yaw; pitch_at_transition) -
+      relative_speed = eval_relative_speed_f(y_start(1:3), y_start(4:6), s(4))
+      call guidance_native(s(1:31), InOl, t_start, y_start(1:3), y_start(4:6), &
+           relative_speed, phase, u_end)
+      call vect2angleOl_f(mattvec3(InOl, u_end), last_pitch, last_yaw)
+      s(21) = last_pitch
+      s(22) = last_yaw
+      if (phase == 2) then
+        s(25) = last_pitch
+      end if
+
+      ! --- 3h. fase successiva, secondo l'evento scattato ------------------
+      select case (phase)
+      case (1, 2, 3)
+        select case (fired)
+        case (1)
+          phase = phase + 1
+        case (2)
+          status = 1; y_final = y_start; t_final = t_start; return
+        case (3)
+          phase = 5
+        end select
+      case (4)
+        select case (fired)
+        case (1)
+          phase = 5
+        case (2)
+          status = 1; y_final = y_start; t_final = t_start; return
+        end select
+      case (5)
+        select case (fired)
+        case (1)
+          phase = 6
+        case (2)
+          status = 1; y_final = y_start; t_final = t_start; return
+        end select
+      case (6)
+        select case (fired)
+        case (1)
+          status = 0; y_final = y_start; t_final = t_start; return
+        case (2)
+          status = 1; y_final = y_start; t_final = t_start; return
+        case (3)
+          status = 2; y_final = y_start; t_final = t_start; return
+        end select
+      end select
+    end do
+
+    ! troppe transizioni di fase (equivalente a
+    ! simulator:tooManyPhaseIterations): rete di sicurezza, non atteso.
+    status = 3
+    y_final = y_start
+    t_final = t_start
+  end subroutine tsto_phases16_f
 
 end module eom_core_mod

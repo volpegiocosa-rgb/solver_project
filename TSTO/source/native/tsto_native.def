@@ -1,0 +1,19 @@
+; tsto_native.def -- tabella di export per tsto_native.dll (Windows).
+;
+; Serve a generare la import library (.lib per MSVC, .dll.a per MinGW)
+; necessaria a linkare tsto_native.dll da un compilatore Windows (MEX
+; MATLAB incluso): una DLL da sola non basta al linker, serve un file
+; che elenchi i simboli esportati coi loro nomi non decorati. Rif.
+; TSTO/source/native/README.md (sezione Windows/MATLAB) per i comandi
+; di generazione (dlltool per MinGW, lib.exe per MSVC).
+;
+; Simboli allineati 1:1 a tsto_native.h (nessun altro simbolo pubblico
+; e' parte del contratto, anche se la DLL e' compilata con
+; --export-all-symbols per semplicita' di build, stesso principio gia'
+; in uso per libtsto_native.so su Linux, dove ELF esporta tutto senza
+; controllo esplicito).
+LIBRARY tsto_native.dll
+EXPORTS
+    eom_native_f
+    phase_event_native_f
+    tsto_phases16_f

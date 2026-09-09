@@ -1787,6 +1787,193 @@ Ancora aperti / da eseguire:
         distribuzione del guadagno resta molto disomogenea (un solo campione,
         nessuna statistica multi-seed).
 
+      **AGGIORNAMENTO (2026-09-09, sessione "TSTO libreria standalone"):
+      porting Fortran ISO_C_BINDING esteso da eom.m/guidance.m/phase_event.m
+      (gia' native, sessioni precedenti) all'INTERA orchestrazione fasi 1-6
+      (rk5.m + kinematic_step.m + simulator.m S3), impacchettato come
+      **libreria condivisa standalone** (decisione utente esplicita: non
+      codice Fortran annegato dentro un `.oct` Octave-specifico, ma un `.so`
+      riusabile anche fuori Octave).**
+
+      - **Verifica di parita' preliminare (richiesta esplicita utente:
+        "verifica che le ISO binding siano gia' aggiornate a 2.0.0 e non
+        siano vecchie")**: confrontate riga per riga le formule CORRENTI di
+        `guidance.m` (tutti i case 1-6), `eom.m`, `phase_event.m` e degli
+        helper (`setOl.m`, `vect2angleOl.m`, `eval_aerodynamic_angle.m`,
+        `eval_AoA.m`, `eval_relative_speed.m`, `cart2geo.m`,
+        `eval_apogee_altitude.m`, `eval_inclination.m`, `PID_actuation.m`,
+        `vers.m`) contro `eom_core.f90` esistente. **Nessuna divergenza**:
+        il porting fatto nelle sessioni precedenti era gia' fedele a
+        RELEASE 2.0.0 (incluso il dettaglio non ovvio che `PID_actuation.m`
+        e' dichiaratamente stateless, `u=(kp+kd+ki)*err`, coerente con la
+        sua replica statica in `guidance_native` case 6). Esteso, non
+        riscritto.
+      - **Architettura standalone**: `gfortran -shared -fPIC -o
+        libtsto_native.so eom_core.f90` (zero dipendenze Octave, verificato
+        `nm -D` esporta i tre simboli C `eom_native_f`/
+        `phase_event_native_f`/`tsto_phases16_f`). Nuovo header C
+        `native/tsto_native.h` + programma dimostrativo
+        `native/test_standalone.c` (nessun `#include` Octave): compilato
+        con `gcc` e lanciato SENZA Octave nell'ambiente, eseguito con
+        successo (exit 0) -- prova concreta, non solo dichiarata, del
+        requisito "riutilizzabile fuori Octave". Gli shim `.oct` esistenti
+        (`eom_oct.cc`, `phase_event_oct.cc`) e il nuovo
+        `tsto_phases16_oct.cc` sono stati ricompilati per LINKARE
+        dinamicamente `libtsto_native.so` (`mkoctfile *_oct.cc -L.
+        -ltsto_native -Wl,-rpath,...`) invece di compilare `eom_core.f90`
+        al loro interno -- un solo artefatto Fortran, tre consumatori
+        sottili. **Nota di build**: `mkoctfile` non propaga `-Wl,-rpath,
+        $ORIGIN` in modo affidabile al linker interno (verificato,
+        `readelf -d` mostrava RUNPATH vuoto); usato invece un rpath
+        assoluto calcolato da `$(pwd)` al momento della build -- corretto
+        perche' i `.oct` vanno comunque ricostruiti ad ogni clone (gia'
+        cosi' prima di questa sessione, non versionati).
+      - **Nuova subroutine `tsto_phases16_f`** (`eom_core.f90`, `bind(C)`):
+        porting di `simulator.m` S3 (staging, salto massa
+        `Minert1+Mfairing` a fine fase 4, `isignite=(phase~=5)`,
+        aggiornamento `last_pitch`/`last_yaw`/auto-popolamento
+        `pitch_at_transition`, switch fase-evento->fase-successiva) + il
+        loop RK5 di `rk5.m` (stadi di Butcher, righe 175-182, invariati) +
+        la localizzazione eventi (secante Illinois con ri-integrazione di
+        sotto-passi RK5, `tol_t=1e-6`, `max_iter=40`, IDENTICI a `rk5.m`) +
+        `kinematic_step.m` (`h=frac*|v|/|a|`). Riusa internamente
+        `eom_native_f`/`phase_event_native_f`/`guidance_native` gia'
+        presenti (nessuna duplicazione della fisica). **Semplificazione
+        deliberata**: NON accumula la storia T/Y (serviva solo a
+        `create_output.m`, mai usato durante l'ottimizzazione: il fast-path
+        e' attivo solo con `config.minimal_output=true`, che legge solo lo
+        stato finale) -- solo `y(8)` corrente + il bracket fisso della
+        localizzazione evento. Fase 7-8 (`injection_target_orbit.m`,
+        `eval_fgh.m`) restano in Octave, INVARIATE (decisione utente: costo
+        O(1) per valutazione, non hot-path, 319 righe di meccanica
+        orbitale closed-form non giustificano il rischio del porting).
+        Uscita: `status` (0=raggiunta fase 7, 1=END_CRASH, 2=END_PROP2,
+        3=errore interno/rete di sicurezza), mappato 1:1 su
+        `termination_reason`.
+      - **Wiring in `simulator.m`**: nuovo blocco "3-fast" prima del loop
+        `while phase<=8` esistente (INVARIATO): se
+        `exist('tsto_phases16_native','file')==3` e
+        `config.minimal_output`, UNA chiamata nativa sostituisce l'intero
+        loop Octave sulle fasi 1-6; il risultato (`y_start`/`t_start`/
+        `phase`/`termination_reason`) alimenta poi lo stesso codice fase
+        7-8 di sempre (nessuna modifica li'). Se il file `.oct` manca:
+        fallback al path esistente (che a sua volta ricade su
+        `eom_native`/`phase_event_native` o completamente interpretato) +
+        **avviso una tantum per sessione** (`persistent` locale alla
+        funzione helper `warn_once_native_fastpath_missing`, NON una
+        variabile globale) per non ripetere in silenzio il footgun gia'
+        documentato in `real_case/diagnostic_plan.md`.
+      - **Validazione numerica** (`native/validate_tsto_native.m`, nuovo,
+        PERSISTENTE -- a differenza della validazione di
+        `eom_native`/`phase_event_native` nelle sessioni precedenti, mai
+        salvata come script, gap notato e non ripetuto qui). Confronta,
+        tramite DUE processi Octave separati (uno col file `.oct` del
+        fast-path presente, uno con lo stesso spostato temporaneamente:
+        evita ogni rischio di cache di funzioni gia' risolte nella stessa
+        sessione), l'output end-to-end di `real_case/traj_cost.m` su 22
+        casi: nominale sui 3 dataset (`reference_LV`, `validation_test`,
+        `validation_test_2`), 15 punti random-in-bounds (seed fisso),
+        punti sul bordo inferiore/superiore del box, il caso patologico
+        noto `pitch_rate_transition=0` (che coincide col suo stesso `lb`),
+        e un punto a payload alto. **Risultato: 22/22 PASS**, differenza
+        relativa su `f`/`cineq`/`ceq`/`prop_residual` quasi sempre
+        ESATTAMENTE ZERO (worst case 2.9e-13, tolleranza scelta 1e-6) --
+        nessuna divergenza di fase/status su nessun caso.
+      - **Performance misurata** (stessa sessione, stesso seed, confronto
+        diretto A/B nella stessa macchina): 30 valutazioni random-in-bounds
+        su `validation_test_2`, mean 39.9ms->8.4ms (4.75x), mediana
+        19.9ms->7.3ms (2.7x), max 126.0ms->28.9ms (4.4x). Run CMA-ES REALE
+        completo (`real_case/run_real_case.m`, seed=1, `max_eval=12000`,
+        default correnti, fast-path attivo): **110s totali, 12101
+        valutazioni, ~9.1ms/eval medio**, `feasible=1`,
+        `Mpayload=16607.2 kg`, 4 restart IPOP -- runnabile in meno di 2
+        minuti invece di minuti-decine (confronto diretto con la vecchia
+        orchestrazione non ripetuto a budget pieno per tempo di sessione,
+        ma il rapporto 30-campioni sopra e' coerente: 12101*~40ms(interp)
+        ~= 484s atteso contro i 110s misurati, ~4.4x, in linea).
+      - **Non toccato**: `injection_target_orbit.m`, `eval_fgh.m`,
+        `guidance.m`, `eom.m`, `phase_event.m` (nessuna modifica, solo
+        lette per la verifica di parita'); nessuna parallelizzazione
+        introdotta o proposta (S2); `create_output.m` resta bypassato da
+        `minimal_output` come prima, non portato.
+
+      **AGGIORNAMENTO (2026-09-09, sessione "DLL Windows/MATLAB"): stesso
+      `eom_core.f90` cross-compilato in una DLL Windows standalone +
+      scritti tre shim MEX, su richiesta utente ("ho installato anche il
+      compilatore per la DLL da usare in Windows Matlab... come chiamarla").
+      Verificato piu' a fondo del previsto (trovato MATLAB installato su
+      questa stessa macchina, non noto prima d'ora), ma l'esecuzione
+      reale in MATLAB resta bloccata da un problema di licenza
+      dell'utente, non affrontato ne' aggirato.**
+
+      - **Tappa A -- `tsto_native.dll`, cross-compilata su Linux con
+        MinGW-w64** (`x86_64-w64-mingw32-gfortran`, gia' installato
+        dall'utente prima di questo messaggio): stesso sorgente Fortran,
+        nessuna riga Windows-specifica. Statica (`-static
+        -static-libgfortran -static-libgcc`): dipende solo da
+        `KERNEL32.dll`/`msvcrt.dll` (verificato `objdump -p`), nessun
+        runtime MinGW da distribuire. Esporta `eom_native_f`/
+        `phase_event_native_f`/`tsto_phases16_f` (`-Wl,--export-all-symbols`,
+        stesso principio gia' in uso per l'.so ELF, nessun controllo
+        export esplicito nel sorgente). **Eseguita per davvero sotto Wine**
+        (non solo ispezionata): `test_standalone.c` cross-compilato e
+        linkato contro la DLL produce output **identico bit-per-bit** alla
+        stessa prova su `libtsto_native.so` Linux nativo. Nuovo
+        `tsto_native.def` (tabella export, TRACCIATO) + import library
+        MinGW `libtsto_native.dll.a` (generata con `dlltool`, NON
+        versionata). **Bug trovato ESEGUENDO** (non solo per ispezione):
+        `libtsto_native.so` e `libtsto_native.dll.a` convivono nella
+        stessa cartella e matchano entrambe `-ltsto_native` -- il
+        cross-linker risolveva sull'.so Linux sbagliato finche' non si
+        passa il path esplicito alla `.dll.a`. Documentato in README, non
+        altrimenti risolto (nessun rename: i nomi sono quelli gia'
+        stabiliti per le rispettive piattaforme).
+      - **Tappa B -- tre shim MEX** (`eom_mex.cpp`, `phase_event_mex.cpp`,
+        `tsto_phases16_mex.cpp`, TRACCIATI): stesso pattern di marshaling
+        di `eom_oct.cc`/`phase_event_oct.cc`/`tsto_phases16_oct.cc`
+        (stesso ordine argomenti, stessi controlli dimensionali), API
+        `mex.h` invece di `octave/oct.h` -- nessuna logica fisica
+        duplicata, `#include "tsto_native.h"` condiviso con la DLL.
+        Nomi di output vincolati (`eom_native`/`phase_event_native`/
+        `tsto_phases16_native`, cioe' `eom_native.mexw64` ecc. su
+        Windows): `simulator.m` li rileva con lo stesso
+        `exist(nome,'file')==3` gia' in uso per gli `.oct` -- **nessuna
+        modifica a `simulator.m`**, l'architettura a fallback a tre
+        livelli era gia' pronta per questo caso.
+      - **Scoperta inattesa: MATLAB R2025a e' installato su questa
+        macchina Linux** (`/usr/local/MATLAB/R2025a`), ma con **licenza
+        non attivata** (`matlab -batch` fallisce, "MathWorks Licensing
+        Error 8" -- questione dell'utente, non affrontata qui). Lo
+        strumento `mex` pero' funziona indipendentemente dalla licenza:
+        i tre shim sono stati **compilati per davvero** con l'`mex.h`
+        reale (non scritti alla cieca), `MEX completed successfully` su
+        tutti e tre (producono `.mexa64`, l'estensione Linux, ma il
+        sorgente C++ e' identico byte-per-byte a quello che MATLAB su
+        Windows compilerebbe in `.mexw64`). Verificato senza eseguire
+        MATLAB (bloccato dalla licenza): `nm -D` mostra `mexFunction`
+        correttamente esportato, `ldd` risolve `libtsto_native.so`.
+        **Limite onesto**: la sola cosa NON verificata e' l'esecuzione
+        reale dentro MATLAB (chiamata delle tre funzioni, confronto con
+        l'output Octave -- stesso metodo di `validate_tsto_native.m`,
+        che testa pero' solo il ramo `.oct`), bloccata dalla licenza non
+        attivata, non da un difetto di codice noto o sospettato.
+      - **`.gitignore` esteso** (`*.dll`, `*.dll.a`, `*.mexw64`,
+        `*.mexa64`, `*.mexmaci64`, `test_standalone_win.exe`): stesso
+        principio gia' applicato a `.oct`/`.so`, artefatti compilati non
+        portabili fra ambienti, MAI versionati. `tsto_native.def` e i tre
+        `*_mex.cpp` restano invece tracciati (sorgenti scritti a mano).
+      - **Non toccato**: nessuna modifica a `eom_core.f90` (stesso
+        sorgente Fortran di sessione precedente, nessuna riga
+        Windows-specifica necessaria), a `simulator.m`, o a qualunque
+        file `.m` del progetto -- questa sessione ha aggiunto solo
+        infrastruttura di build/packaging per una seconda piattaforma di
+        deployment (Windows/MATLAB), non ha toccato logica di
+        ottimizzazione ne' di simulazione.
+      - **Prossimo passo, non fatto qui**: attivare una licenza MATLAB
+        valida (questa macchina o una Windows) per completare la
+        validazione numerica dei tre `.mexw64`/`.mexa64` con lo stesso
+        metodo (comparativo) di `validate_tsto_native.m`.
+
 - [x] Dimensione di calibrazione benchmark: usata n=25 per sphere (proposta
       originale), n=5 per g13 (dimensione nativa del problema, non scelta),
       n=2 per rosenbrock vincolata (dimensione nativa della formulazione
