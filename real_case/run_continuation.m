@@ -122,6 +122,9 @@ function out = run_continuation(user_opt)
     [x_nom, lb, ub] = local_read_csv(fullfile(here, 'design_variables.csv'), opt.n_design);
     i_pl = opt.i_payload;
 
+    % log_level da optimizer_settings.csv (nessun default: errore se assente)
+    other.log_level = opt.log_level;
+
     tol_con = 0.03 * [other.MIS.perigee_altitude_target; ...
                       other.MIS.apogee_altitude_target; ...
                       other.MIS.target_orbital_inclination];
@@ -442,6 +445,12 @@ function v = local_parse_setting(name, raw)
                 v = [];
             else
                 v = str2double(raw);
+            end
+        case 'log_level'
+            v = str2double(raw);
+            if isnan(v) || v < 0 || v > 3 || v ~= round(v)
+                error('run_continuation:badLogLevel', ...
+                      'log_level deve essere 0/1/2/3, letto: %s', raw);
             end
         otherwise
             v = str2double(raw);

@@ -23,6 +23,9 @@
 
     tsto_input_dir = fullfile(here, '..', 'TSTO', 'input', 'validation_test_2');
     other = interface(tsto_input_dir);
+    % traj_cost.m richiede other.log_level esplicito (nessun default
+    % silenzioso, merge 3.0.0): 1 = START/END bufferizzati.
+    other.log_level = 1;
 
     n_design = 10;
     csv_path = fullfile(here, 'design_variables.csv');

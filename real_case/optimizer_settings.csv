@@ -22,3 +22,4 @@ bisect_max 8 - iterazioni_massime_della_bisezione_sul_muro
 min_gain 100 kg guadagno_minimo_di_payload_per_non_contare_uno_stadio_come_"a_vuoto"
 patience 3 - stadi_consecutivi_a_vuoto_tollerati_prima_dello_stop_anticipato
 x0_retreat 500 kg arretramento_del_SOLO_punto_di_partenza_di_uno_stadio_sotto_il_muro_certificato_(il_punto_riportato_in_out.x_resta_sul_muro)
+log_level 1 - livello_diagnostica_eval_log:_0=nessun_log,_1=START/END_bufferizzato,_2=investigazione_(+x,+g/h/prop),_3=forense_(+fflush)

@@ -14,16 +14,24 @@ function [f, cineq, ceq, prop_residual] = traj_cost(x, other)
 %   path/IO, per restare compatibile con l'interfaccia generica di solver.m
 %   S4, che non deve sapere nulla di TSTO).
 %
-%   LOGGING PER-EVAL (decisione utente, sessione di debug ODE-hang, Fase
-%   5): unico side-effect deliberato di questo file, per diagnosticare
-%   QUALE x manda in stallo ode45/ode15s su TSTO (un run esplorativo
-%   precedente si e' bloccato 3h senza completare, senza nessuna traccia
-%   di quale valutazione l'avesse causato). Scrive due righe per
-%   valutazione in real_case/eval_log.csv (append, apri/chiudi il file ad
-%   ogni scrittura cosi' il flush e' garantito anche se il processo viene
-%   ucciso a meta' valutazione): una riga START prima di traj_problem.m,
-%   una END dopo. Se il log si ferma su uno START senza END corrispondente,
-%   quello e' l'x che ha causato lo stallo.
+%   LOGGING PER-EVAL A VERBOSITA' VARIABILE (decisione utente, merge
+%   3.0.0). Nato in Fase 5 (sessione di debug ODE-hang) per diagnosticare
+%   QUALE x manda in stallo la simulazione TSTO (un run esplorativo si era
+%   bloccato 3h senza traccia di quale valutazione l'avesse causato), poi
+%   esteso a livelli configurabili invece di un unico formato sempre attivo.
+%   Il livello NON e' un magic number: e' letto da other.log_level, che
+%   run_continuation.m propaga da optimizer_settings.csv (opt.log_level).
+%   NESSUN default silenzioso: se other.log_level manca -> errore esplicito.
+%     0 = nessun log (zero overhead I/O). Producer puro.
+%     1 = START/END bufferizzati (fopen UNA volta, no fclose per-eval).
+%     2 = investigazione: + x completo, + cineq/ceq, + prop_residual.
+%     3 = forense: come 2 + fflush ad ogni riga (sopravvive a crash/kill,
+%         come il vecchio apri/chiudi per-eval). NB: traj_problem.m ha
+%         gia' un try/catch interno (ritorna f=Inf,g=20,h=1e6), quindi qui
+%         non serve alcun wrapping: nessuna eccezione risale a traj_cost.
+%   File: real_case/eval_log.csv (append, gitignored: artefatto diagnostico
+%   di run, non sorgente -- rif. CLAUDE.md S11 Fase 5). Riga START prima di
+%   traj_problem.m, riga END dopo: uno START senza END = x che ha stallato.
 %
 %   CLIP AI BOUNDS FISICI (trovato durante l'integrazione, non un
 %   workaround): CMA-ES campiona in spazio normalizzato SENZA clip a [0,1]
@@ -33,11 +41,11 @@ function [f, cineq, ceq, prop_residual] = traj_cost(x, other)
 %   variabili PRIVE DI SENSO FISICO (quota di trigger negativa, massa
 %   payload negativa, timeline di fase invertita, assetto capovolto),
 %   verificato causare dinamica quasi-singolare in eom.m/phase_event.m e
-%   valutazioni ODE45 che restano bloccate per minuti. I bounds (lb/ub,
-%   other.opt_bounds, impostati da run_real_case.m) SONO la definizione di
-%   "fisicamente sensato" per questo problema: clippare qui e' quindi
-%   sufficiente, non un ripiego -- ogni componente anomala osservata era
-%   gia' fuori dal proprio lb/ub.
+%   valutazioni ODE che restano bloccate per minuti. I bounds (lb/ub,
+%   other.opt_bounds, impostati da run_real_case.m/run_continuation.m) SONO
+%   la definizione di "fisicamente sensato" per questo problema: clippare
+%   qui e' quindi sufficiente, non un ripiego -- ogni componente anomala
+%   osservata era gia' fuori dal proprio lb/ub.
 %
 %   INPUT  x     : 10x1, variabili di design (ordine: rif. header
 %                  TSTO/source/traj_problem.m). UNITA' MISTE (decisione
@@ -66,13 +74,24 @@ function [f, cineq, ceq, prop_residual] = traj_cost(x, other)
 %                  tutta l'ottimizzazione -- rif. traj_problem.m, evita
 %                  di rileggere i CSV a ogni valutazione), con in aggiunta
 %                  other.opt_bounds.lb / .ub (10x1, impostati da
-%                  run_real_case.m) usati SOLO per il clip qui sotto.
+%                  run_real_case.m/run_continuation.m, usati SOLO per il
+%                  clip qui sotto) e other.log_level (0-3, vedi sopra).
 %   OUTPUT f      : -Mpayload [kg] (da massimizzare, sign convention min(f)
 %                    di solver_project -- rif. TSTO/source/eval_fgh.m)
 %          cineq  : [] (placeholder, nessuna disuguaglianza definita in TSTO,
 %                    coerente col placeholder di solver_project CLAUDE.md S4)
 %          ceq    : 3x1, residui perigeo/apogeo/inclinazione rispetto al
 %                    target di missione (rif. TSTO/source/eval_fgh.m)
+
+    % --- livello di log: da other.log_level (NESSUN default silenzioso) ---
+    if ~isfield(other, 'log_level')
+        error('traj_cost:missingLogLevel', ...
+            ['other.log_level non impostato: specificarlo (0/1/2/3) in ' ...
+             'optimizer_settings.csv e propagarlo a other in ' ...
+             'run_continuation.m. Nessun default implicito.']);
+    end
+    log_level = other.log_level;
+
     x = x(:);
     if isfield(other, 'opt_bounds')
         x = min(max(x, other.opt_bounds.lb(:)), other.opt_bounds.ub(:));
@@ -86,14 +105,32 @@ function [f, cineq, ceq, prop_residual] = traj_cost(x, other)
     ang_idx = [3, 4, 6, 8];   % pitch_c1, pitch_c2, pitch_rate_transition, AoA_rate
     x(ang_idx) = deg2rad(x(ang_idx));
 
-    % --- log START (vedi header per il perche') ---------------------------
-    log_path = fullfile(fileparts(mfilename('fullpath')), 'eval_log.csv');
+    % --- log START (bufferizzato, verbosita' = log_level) ----------------
+    persistent log_fid n_eval_global
+    if isempty(log_fid)
+        n_eval_global = 0;
+        if log_level > 0
+            log_path = fullfile(fileparts(mfilename('fullpath')), 'eval_log.csv');
+            log_fid  = fopen(log_path, 'a');
+        else
+            log_fid = -1;
+        end
+    end
+    n_eval_global = n_eval_global + 1;
+    is_octave = logical(exist('OCTAVE_VERSION', 'builtin'));
     t_eval = tic;
-    fid = fopen(log_path, 'a');
-    if fid >= 0
-        fprintf(fid, 'START,%s,%s\n', datestr(now, 'yyyy-mm-dd HH:MM:SS.FFF'), ...
-                sprintf('%.10g,', x));
-        fclose(fid);
+    if log_fid >= 0
+        if log_level == 1
+            fprintf(log_fid, 'START,%s,#%d\n', ...
+                    datestr(now, 'yyyy-mm-dd HH:MM:SS.FFF'), n_eval_global);
+        else   % 2 o 3: x completo (post clip+deg2rad) per riprodurre il caso
+            fprintf(log_fid, 'START,%s,#%d,%s\n', ...
+                    datestr(now, 'yyyy-mm-dd HH:MM:SS.FFF'), n_eval_global, ...
+                    sprintf('%.10g,', x));
+        end
+        if log_level >= 3 && is_octave
+            fflush(log_fid);   % forense: nulla perso anche a crash/kill
+        end
     end
 
     % 4a uscita: propellente residuo stadio 2 (diagnostica per il metodo di
@@ -101,11 +138,18 @@ function [f, cineq, ceq, prop_residual] = traj_cost(x, other)
     % vede mai: il contratto di CLAUDE.md S4 resta invariato.
     [f, cineq, ceq, prop_residual] = traj_problem(x, other);
 
-    % --- log END ------------------------------------------------------
-    fid = fopen(log_path, 'a');
-    if fid >= 0
-        fprintf(fid, 'END,%s,%.6g,%.3f\n', datestr(now, 'yyyy-mm-dd HH:MM:SS.FFF'), ...
-                f, toc(t_eval));
-        fclose(fid);
+    % --- log END (bufferizzato) ------------------------------------------
+    if log_fid >= 0
+        if log_level == 1
+            fprintf(log_fid, 'END,%s,#%d,%.6g,%.3f\n', ...
+                    datestr(now, 'yyyy-mm-dd HH:MM:SS.FFF'), n_eval_global, f, toc(t_eval));
+        else   % 2 o 3: g/h/prop per capire perche' un x e' (in)feasible
+            fprintf(log_fid, 'END,%s,#%d,f=%.6g,g=%s,h=%s,prop=%.6g,%.3f\n', ...
+                    datestr(now, 'yyyy-mm-dd HH:MM:SS.FFF'), n_eval_global, f, ...
+                    mat2str(cineq(:)', 6), mat2str(ceq(:)', 6), prop_residual, toc(t_eval));
+        end
+        if log_level >= 3 && is_octave
+            fflush(log_fid);
+        end
     end
 end

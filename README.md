@@ -22,6 +22,27 @@ delta-v del burn di injection.
 
 ---
 
+## Novità della release 3.0.0
+
+Merge di un ramo separato (TAR `solver_project-2.1.1.tar`) nella release 2.2.0:
+
+1. **Logging per-eval a verbosità configurabile**: nuovo campo `log_level` (0-3) in
+   `real_case/optimizer_settings.csv`, propagato a `other.log_level` da
+   `run_continuation.m` e letto da `real_case/traj_cost.m` (nessun default silenzioso —
+   se manca, errore esplicito). `0` = nessun log; `1` = START/END bufferizzati (un solo
+   `fopen` per l'intero run, non più apri/chiudi ad ogni riga); `2` = aggiunge `x`,
+   `cineq`/`ceq`, `prop_residual`; `3` = come `2` con `fflush` per riga (sopravvive a un
+   crash/kill a metà valutazione). Sostituisce il vecchio log sempre-attivo di Fase 5.
+   Gli script standalone che non passano da `run_continuation.m`
+   (`run_real_case.m`, `run_real_case_de.m`, `run_feasibility_floor_probe.m`,
+   `run_reduced_restart_test.m`, `compare_real_case.m`) impostano `other.log_level = 1`
+   esplicitamente.
+2. **Portfolio di solver invariato**: `solver_choice`/`solver_de.m` (release 2.2.0)
+   convivono senza conflitti col nuovo logging — verificato eseguendo entrambi i motori
+   con `log_level` attivo.
+
+---
+
 ## Novità della release 2.2.0
 
 1. **Secondo solver `solver_de.m`**: Differential Evolution (DE/rand/1/bin) + Deb's rule

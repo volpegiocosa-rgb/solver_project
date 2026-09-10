@@ -2030,6 +2030,81 @@ Ancora aperti / da eseguire:
         tuning cablate come `local_defaults()`; non e' quello a cui si
         riferiva la richiesta). `design_variables.csv` invariato.
 
+      **RELEASE 3.0.0 (2026-09-10, sessione "merging-to-3-0-0"): merge di un
+      TAR (`solver_project-2.1.1.tar`, snapshot esportato separatamente,
+      probabilmente ramo Windows) nella cartella corrente. Nessuna regressione,
+      portfolio di solver e logging a verbosita' variabile coesistono.**
+
+      Diff sistematico fra le due versioni (tutti i file, non solo quelli
+      elencati dall'utente): 7 file differivano su 158 comuni. Confermato
+      che `CLAUDE.md` stesso e le altre 151 righe erano byte-identiche.
+      **Gap notato**: il TAR non conteneva mai il lavoro sul portfolio
+      DE+Deb (rif. sopra, commit `fc88c51`) — segno che il changelog di
+      questo file non era stato aggiornato in quella sessione (non corretto
+      qui, fuori scope, solo osservato).
+
+      - **Importato dal TAR** (funzionalita' assente nella cartella corrente):
+        logging per-eval a **verbosita' configurabile** (`other.log_level`,
+        0-3), che sostituisce il vecchio log sempre-attivo apri/chiudi-per-
+        riga di Fase 5. Nuovo campo `log_level` in
+        `real_case/optimizer_settings.csv` (`local_parse_setting` in
+        `run_continuation.m` esteso con un case dedicato, range 0-3
+        validato, nessun default silenzioso — coerente con CLAUDE.md S7);
+        `other.log_level = opt.log_level` propagato subito dopo la lettura
+        del dataset, prima del loop stadi. `real_case/traj_cost.m` riscritto
+        sul modello del TAR: `persistent log_fid`/`n_eval_global` (un solo
+        `fopen` per l'intero run invece di apri/chiudi ad ogni riga),
+        `error('traj_cost:missingLogLevel', ...)` esplicito se
+        `other.log_level` manca. Livelli: 0 = nessun log; 1 = START/END
+        bufferizzati (comportamento piu' vicino al vecchio, ma senza
+        `fopen`/`fclose` per-eval); 2 = aggiunge `x` completo (post
+        clip+deg2rad) e `cineq`/`ceq`/`prop_residual`; 3 = come 2 +
+        `fflush` per riga (unico livello che sopravvive a un crash/kill a
+        meta' valutazione, come il vecchio comportamento sempre-attivo).
+      - **Mantenuto dalla cartella corrente** (non nel TAR): il **portfolio
+        di solver** (`opt.solver_choice`, `local_solver_from_choice`,
+        `@solver`/`@solver_de`, `addpath(.../de)`) — invariato, nessun
+        conflitto strutturale col logging: i due meccanismi toccano parti
+        disgiunte di `run_continuation.m`/`optimizer_settings.csv`.
+      - **Bug di merge trovato ESEGUENDO, non solo per ispezione**: 5 script
+        di `real_case/` (`run_real_case.m`, `run_real_case_de.m`,
+        `run_feasibility_floor_probe.m`, `run_reduced_restart_test.m`,
+        `compare_real_case.m`) chiamano `traj_cost`/`solver`/`solver_de`
+        DIRETTAMENTE (non via `run_continuation.m`) costruendo `other` da
+        soli, senza mai impostare `other.log_level` — con l'errore
+        esplicito importato dal TAR, ciascuno di questi script si sarebbe
+        rotto alla prima valutazione. **Presente anche nel TAR stesso**
+        (questi 5 file erano byte-identici fra le due versioni, quindi il
+        TAR portava lo stesso difetto non ancora scoperto). Fix: aggiunto
+        `other.log_level = 1;` subito dopo `other = interface(...)` in
+        tutti e 5 (stesso valore, equivalente in spirito al vecchio
+        comportamento sempre-attivo di questi script standalone).
+      - **Scartato per decisione utente**: (a) il `tic`/`toc` che il TAR
+        aggiungeva a `main.m` (root) attorno a `run_continuation()`, non
+        confermato come parte di "baseline per TSTO"; (b) il tool
+        `export_mfiles_to_pdf.m` + cartelle `MD/`/`PDF/` (snapshot di
+        documentazione dell'intero progetto in Markdown/PDF, presente solo
+        nel TAR) — escluso esplicitamente, non fa parte di 3.0.0.
+      - **`real_case/warm_start.mat`** (stato di continuazione, tracciato in
+        git) differiva leggermente fra le due versioni (Mpayload 24655.0 vs
+        ~24655.9 kg, run quasi identici ma non uguali): tenuta la versione
+        della cartella corrente (decisione utente esplicita, e' la piu'
+        recente su questa macchina).
+      - **`real_case/eval_log.csv`** differiva ma e' un artefatto gitignored
+        (`real_case/eval_log*.csv`), non sorgente: nessuna decisione di
+        merge necessaria, resta quello locale.
+      - **Verificato ESEGUENDO** in una copia isolata (non nella working
+        copy, per non toccare `warm_start.mat`/`eval_log.csv` tracciati):
+        smoke test `run_continuation(struct('n_stage',1,'stage_eval',20,
+        'max_restarts',0))` con `solver_choice=1` (default, CMA-ES+ARCH) —
+        `feasible=1`, risultato numerico coerente col seed certificato
+        (24655.3 -> 24627.2 kg, atteso: budget minimo, nessun guadagno);
+        ripetuto con `solver_choice=2, log_level=2` (DE+Deb, livello di log
+        piu' verboso) — `feasible=1`, `eval_log.csv` con `x`/`g`/`h`/`prop`
+        completi come da spec livello 2. Portfolio di solver e logging a
+        verbosita' variabile confermati funzionanti insieme, nessuna
+        regressione sull'uno causata dall'altro.
+
 - [x] Dimensione di calibrazione benchmark: usata n=25 per sphere (proposta
       originale), n=5 per g13 (dimensione nativa del problema, non scelta),
       n=2 per rosenbrock vincolata (dimensione nativa della formulazione

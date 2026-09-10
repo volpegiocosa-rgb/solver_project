@@ -59,6 +59,10 @@
     % e' INTERNO al box.
     tsto_input_dir = fullfile(here, '..', 'TSTO', 'input', 'validation_test_2');
     other = interface(tsto_input_dir);
+    % traj_cost.m richiede other.log_level esplicito (nessun default
+    % silenzioso, merge 3.0.0): 1 = START/END bufferizzati, comportamento
+    % storico di questo script.
+    other.log_level = 1;
 
     % === variabili di design: x0/lb/ub letti da design_variables.csv
     %     (decisione utente, vedi header). Colonne attese (spazio-
