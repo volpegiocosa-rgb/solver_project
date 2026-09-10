@@ -1,8 +1,16 @@
-# solver — CMA-ES + ARCH + continuazione (Octave/MATLAB)
+# solver — CMA-ES+ARCH / DE+Deb (portfolio) + continuazione (Octave/MATLAB)
 
-Ottimizzatore black-box vincolato **generico e dimension-agnostic**: motore **CMA-ES**
-(base `purecmaes.m` di Hansen) + gestione vincoli **ARCH** (Sakamoto & Akimoto 2022).
-**Niente Augmented Lagrangian** (decisione di progetto vincolante).
+Ottimizzatore black-box vincolato **generico e dimension-agnostic**, con **due motori
+intercambiabili** dietro lo stesso contratto `[f, cineq, ceq] = fun(x, other)`:
+
+1. **CMA-ES** (base `purecmaes.m` di Hansen) + gestione vincoli **ARCH** (Sakamoto &
+   Akimoto 2022) — `solver.m`. **Niente Augmented Lagrangian**, niente feasibility-rule di
+   Deb "rigida" nel ranking (decisioni di progetto vincolanti per ARCH).
+2. **Differential Evolution + Deb's rule** (Storn & Price 1997 / Deb 2000) — `solver_de.m`,
+   stesso identico contratto di chiamata. Nato come baseline di confronto ONESTO contro
+   CMA-ES+ARCH (non come sostituto assunto migliore): vedi
+   [§ Portfolio di solver](#portfolio-di-solver-cma-esarch-vs-dedeb) sotto per i numeri
+   misurati.
 
 Applicazione di riferimento: massimizzare la **massa payload** di un lanciatore a due
 stadi a propulsione liquida (simulatore **TSTO**, incluso nel repository) rispettando i
@@ -11,6 +19,23 @@ delta-v del burn di injection.
 
 > Per sviluppare: leggere **`CLAUDE.md`** (scopo, contratti, regole, piano, misure
 > storiche). In caso di dubbio o contraddizione: chiedere, non indovinare.
+
+---
+
+## Novità della release 2.2.0
+
+1. **Secondo solver `solver_de.m`**: Differential Evolution (DE/rand/1/bin) + Deb's rule
+   per la gestione dei vincoli, drop-in rispetto a `solver.m` (stessa firma, stesso
+   contratto utente). Modulo completamente separato (`/de` + `constraints/deb_select.m` +
+   `io/parse_opts_de.m`): non tocca `solver.m`/`core/`/`arch_rank.m`, zero rischio di
+   regressione sul motore CMA-ES esistente.
+2. **Portfolio di solver nella continuazione**: `real_case/optimizer_settings.csv` ha un
+   nuovo campo `solver_choice` (`1`=CMA-ES+ARCH, `2`=DE+Deb) che sceglie il motore usato
+   per ogni stadio di `run_continuation.m` — letteralmente plug-and-play, nessun
+   meccanismo nuovo aggiunto per "aiutare" DE nel confronto.
+3. **Confronto onesto misurato** su tre livelli (colpo singolo, continuazione a singolo
+   seed, continuazione multi-seed) — risultati in `results/de_vs_cmaes_*.md`, riassunti
+   sotto.
 
 ---
 
@@ -81,7 +106,15 @@ Un campo non riconosciuto produce un **errore esplicito** (un typo non passa sil
 ```matlab
 [f, cineq, ceq] = my_problem(x);      % cineq <= 0, ceq == 0
 bounds.lb = lb; bounds.ub = ub;
-result = solver(@my_problem, bounds, struct('seed', 1, 'tol_con', tol_vec));
+result = solver(@my_problem, bounds, struct('seed', 1, 'tol_con', tol_vec));       % CMA-ES+ARCH
+result = solver_de(@my_problem, bounds, struct('seed', 1, 'tol_con', tol_vec));    % DE+Deb (stesso contratto)
+```
+
+Nella continuazione, la scelta e' un campo in `real_case/optimizer_settings.csv`
+(`solver_choice`: `1`=CMA-ES+ARCH, `2`=DE+Deb) oppure un override ad-hoc:
+
+```matlab
+out = run_continuation(struct('solver_choice', 2));   % questo run usa DE+Deb
 ```
 
 ### Benchmark (validazione)
@@ -189,6 +222,72 @@ millimetrici contro una tolleranza di 12 km.
 
 ---
 
+## Portfolio di solver: CMA-ES+ARCH vs DE+Deb
+
+`solver_de.m` non e' stato scritto per essere "il nuovo default": e' una baseline di
+confronto scritta apposta senza aiuti su misura, per rispondere onestamente a una domanda
+concreta — *se ne vale la pena, DE deve poter sostituire CMA-ES semplicemente cambiando un
+numero, non riscrivendo la procedura*. La logica di continuazione (ratchet, predittore in
+massa, bisezione, warm/cold start) e' rimasta **identica byte per byte**: l'unico cambio e'
+`str2func`/`switch` sul valore di `solver_choice`. I campi CMA-ES-specifici
+(`sigma0_cold/warm`, `restart_mode`) restano nel codice e vengono passati sempre — DE li
+ignora silenziosamente, non gli e' stato costruito un equivalente apposta.
+
+### Gestione dei vincoli: ARCH vs Deb's rule
+
+| | ARCH (`solver.m`) | Deb's rule (`solver_de.m`) |
+|---|---|---|
+| Ranking | aggregazione adattiva rank(f) + α·rank(violazione), α auto-tarato | feasible batte infeasible; fra feasible vince f; fra infeasible vince violazione minore |
+| Tolleranza uguaglianze | schedule decrescente (`eps_schedule`, ampia all'inizio) | fissa fin dalla prima generazione (`tol_con`) |
+| Restart | IPOP, popolazione raddoppia | nessuno (DE vanilla, scelta deliberata per il confronto) |
+| Popolazione iniziale | 1 punto (`xmean`) + `sigma0` | Sobol quasi-uniforme, `x0` come 1 individuo su `pop_size` |
+
+CLAUDE.md vieta la feasibility-rule di Deb "rigida" **nel design di ARCH** (§5.2) — non
+un divieto di progetto sull'uso di Deb's rule altrove: qui e' un secondo modulo
+indipendente, esattamente per poterla confrontare con ARCH ad armi pari.
+
+### Risultati misurati (tre livelli, tutti in `results/`)
+
+**1) Colpo singolo** (`compare_real_case.m`, 5 seed, budget 12 000 valutazioni identico):
+DE uguaglia o batte CMA-ES su 4/5 seed, **5-10x piu' veloce** (si ferma su plateau invece
+di esaurire il budget). `results/de_vs_cmaes_real_case.md`.
+
+**2) Continuazione, singolo seed** (`results/de_vs_cmaes_continuation.md`): stessa
+procedura, stesso seed, partenza a zero identica per entrambi.
+
+| solver | Mpayload finale | valutazioni | wall clock |
+|---|---|---|---|
+| CMA-ES+ARCH | 24 446.6 kg | 15 067 | 128.6 s |
+| DE+Deb | **24 911.6 kg** (+1.9%) | **8 490** (−44%) | **75.0 s** (1.7x) |
+
+**3) Continuazione, 5 seed** (`results/de_vs_cmaes_continuation_multiseed.md`) — il quadro
+onesto, non il caso fortunato:
+
+| metrica | media±dev.std CMA-ES | media±dev.std DE |
+|---|---|---|
+| Mpayload [kg] | 22 628 ± 1990 (CV 8.8%) | 23 100 ± 2007 (CV 8.7%) |
+| valutazioni | 14 570 ± 2094 | 6 909 ± 2180 |
+| wall clock [s] | 147.3 ± 27.5 | 59.8 ± 19.2 |
+
+DE vince 3/5 seed sul risultato finale (anche di molto: +22.7%, +11.8%) e ne perde 2/5
+(fino a −16.9%): **sulla qualita' del risultato i due motori sono comparabili, nessuno
+sistematicamente migliore** (deviazione standard/CV quasi identici). Sulla **velocita' DE
+vince 5/5 senza eccezioni** (1.5x-3.8x), ma con un tempo relativamente meno prevedibile
+(CV 32% contro 15-19% di CMA-ES) — conseguenza diretta del suo arresto anticipato per
+plateau, che scatta prima o dopo a seconda del seed.
+
+### Conclusione onesta
+
+Non "DE sostituisce CMA-ES": **comparabile sul risultato, sistematicamente piu' rapido**.
+Un uso pratico ragionevole e' far girare DE su 2-3 seed nel tempo che CMA-ES impiega per
+uno solo, e tenere il migliore — cosa che con CMA-ES costerebbe proporzionalmente di piu'.
+Limiti dichiarati di DE: nessun restart interno (il "restart" e' solo lo stadio della
+continuazione), gap di scala su `cineq` ereditato da ARCH e mai esercitato sul caso reale
+(`cineq=[]`), `x0` diluito a 1 individuo su `pop_size` contro il 100% del peso in CMA-ES
+(`xmean`). Un solo blocco di 5 seed: non e' una statistica robusta in senso stretto.
+
+---
+
 ## Limiti dichiarati
 
 - **La ricerca e' caoticamente sensibile alle condizioni iniziali.** La stessa
@@ -217,15 +316,17 @@ millimetrici contro una tolleranza di 12 km.
 ## Struttura
 
 ```
-solver.m            entry point generico: solver(fun, bounds, opts)
+solver.m            entry point CMA-ES+ARCH: solver(fun, bounds, opts)
+solver_de.m         entry point DE+Deb, STESSO contratto: solver_de(fun, bounds, opts)
 main.m              entry point utente: ottimizzazione del payload TSTO
 core/               motore CMA-ES (ask/tell, init, restart IPOP)
-constraints/        ARCH (ranking, repair, epsilon-schedule) + polish
-io/                 opts, normalizzazione, bound transform, logging
+de/                 motore DE (ask/tell generazionale, popolazione Sobol, bound reflect)
+constraints/        ARCH (ranking, repair, epsilon-schedule) + Deb's rule + polish
+io/                 opts (CMA-ES e DE), normalizzazione, bound transform, logging
 benchmark/          sphere, Rosenbrock vincolata, g13
-real_case/          adapter TSTO, continuazione, variabili di design
+real_case/          adapter TSTO, continuazione (portfolio di solver), variabili di design
 TSTO/               simulatore (vendorizzato) + kernel Fortran nativi
-results/            output dei run (non versionati)
+results/            output dei run e confronti DE/CMA-ES (non versionati)
 ```
 
 Genericita' (rif. `CLAUDE.md` §1): `n`, `n_eq`, `n_ineq` ricavati a runtime, nessun magic
@@ -238,3 +339,5 @@ dominio vive solo nella funzione utente.
 - ARCH: Sakamoto & Akimoto, *Evolutionary Computation* 30(4), 2022 — arXiv:1811.00764
 - Bound handling: pycma `cma/boundary_transformation.py`
 - CEC2006 (g13): https://github.com/franciscorafaelsr/cec2006-benchmarks
+- Differential Evolution: Storn & Price, *J. Global Optim.* 11, 1997, 341-359
+- Deb's rule: Deb, *Comput. Methods Appl. Mech. Engrg.* 186, 2000, 311-338

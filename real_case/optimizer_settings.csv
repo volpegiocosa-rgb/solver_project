@@ -1,4 +1,5 @@
 name value unit note
+solver_choice 1 - portfolio_di_solver_(scelta_utente):_1=CMA-ES+ARCH_(solver.m,_default,_comportamento_invariato),_2=DE+Deb_(solver_de.m);_rif._results/de_vs_cmaes_continuation_multiseed.md_per_il_confronto_misurato_fra_i_due_(comparabili_sul_risultato,_DE_sistematicamente_piu'_veloce_ma_con_tempo_meno_prevedibile)
 dataset validation_test_2 - dataset_TSTO_in_input/,_sorgente_di_altitude/inclinazione_target_e_tol_con
 n_design 10 - numero_variabili_di_design,_deve_combaciare_con_le_righe_di_design_variables.csv
 i_payload 10 - indice_1-based_di_Mpayload_dentro_x

@@ -102,6 +102,7 @@ function out = run_continuation(user_opt)
     addpath(fullfile(here, '..', 'core'));
     addpath(fullfile(here, '..', 'constraints'));
     addpath(fullfile(here, '..', 'io'));
+    addpath(fullfile(here, '..', 'de'));
     addpath(here);
     addpath(fullfile(here, '..', 'TSTO', 'source'), '-end');
     addpath(fullfile(here, '..', 'TSTO', 'source', 'native'), '-end');
@@ -110,6 +111,11 @@ function out = run_continuation(user_opt)
         user_opt = struct();
     end
     opt = local_merge_opts(local_defaults(), user_opt);
+
+    % === portfolio di solver (scelta utente, rif. optimizer_settings.csv) ===
+    % Risolto una sola volta qui (non ad ogni stadio): un valore non riconosciuto deve
+    % fermare la run PRIMA di qualunque calcolo, non a meta' della continuazione.
+    solver_handle = local_solver_from_choice(opt.solver_choice);
 
     % === dataset e spazio di ricerca ====================================
     other = interface(fullfile(here, '..', 'TSTO', 'input', opt.dataset));
@@ -230,7 +236,22 @@ function out = run_continuation(user_opt)
                  'sigma0 = %g, budget = %d eval\n'], ...
                 s, opt.n_stage, kind, bounds.lb(i_pl), x0(i_pl), opts.sigma0, ev(s));
 
-        result = solver(@traj_cost, bounds, opts);
+        % opt.solver_choice (rif. optimizer_settings.csv, portfolio di solver): risolto in
+        % solver_handle PRIMA del loop stadi (vedi sopra). Tutto il resto della
+        % continuazione (ratchet, predittore in massa, push-to-wall, warm start su x0) e'
+        % gia' agnostico rispetto al motore usato per ogni stadio, perche' opera solo su
+        % result.x_best_phys/result.feasible/result.n_eval (contratto comune a
+        % solver.m/solver_de.m). I campi opts.sigma0/opts.restart_mode/opts.max_restarts
+        % impostati sopra sono CMA-ES-specifici: solver_de li ignora senza errori (stesso
+        % meccanismo gia' validato in real_case/compare_real_case.m: ogni parser legge solo
+        % i propri campi noti) -- per solver_de la distinzione stadio caldo/esplorativo/cold
+        % ha quindi effetto SOLO tramite bounds.lb(i_pl) (il ratchet) e opts.x0 (sempre
+        % passato, invariato rispetto a prima), non tramite un passo iniziale dedicato: DE
+        % non ha un analogo di sigma0_warm, non ne viene aggiunto uno qui apposta per non
+        % alterare il confronto "plug and play" in un aiuto su misura (rif. piano di
+        % sessione "confronto DE vs CMA-ES+ARCH", risultati in
+        % results/de_vs_cmaes_continuation_multiseed.md).
+        result = solver_handle(@traj_cost, bounds, opts);
         n_eval_tot = n_eval_tot + result.n_eval;
 
         xb = result.x_best_phys;
@@ -442,6 +463,23 @@ function o = local_merge_opts(d, u)
             error('run_continuation:badOpt', 'Opzione non riconosciuta: %s', f{k});
         end
         o.(f{k}) = u.(f{k});
+    end
+end
+
+
+function h = local_solver_from_choice(choice)
+    % Portfolio di solver (rif. optimizer_settings.csv, campo solver_choice): mappa il
+    % codice numerico scelto dall'utente all'entry point da usare per OGNI stadio. Errore
+    % esplicito su un valore non riconosciuto (nessun default silenzioso, rif. CLAUDE.md S7).
+    switch choice
+        case 1
+            h = @solver;      % CMA-ES+ARCH
+        case 2
+            h = @solver_de;   % DE+Deb
+        otherwise
+            error('run_continuation:badSolverChoice', ...
+                ['optimizer_settings.csv: solver_choice deve essere 1 (CMA-ES+ARCH) o ' ...
+                 '2 (DE+Deb), ricevuto %g.'], choice);
     end
 end
 
