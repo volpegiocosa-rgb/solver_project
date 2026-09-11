@@ -257,7 +257,34 @@
 >   Zip pronto in locale, **non ancora pubblicato**: la pubblicazione è
 >   Gate 10, azione visibile pubblicamente, da confermare a parte.
 >
-> Gate 10 (release GitHub) non ancora iniziato.
+> - Gate 10 ✅ (release GitHub): commit `7c03eb4` (18 file: `giano/`,
+>   `giano-design.md`, `road-to-3-1-0.md`) pushato su `main`; release
+>   `v3.1.0` pubblicata con l'asset
+>   `giano-1.0.0-solver_project-3.1.0.zip` (80 file, 514176 byte).
+>   URL: https://github.com/volpegiocosa-rgb/solver_project/releases/tag/v3.1.0
+>
+> **PIANO COMPLETATO (Gate 1-10, tutti verdi).**
+>
+> - Addendum post-release (richiesta utente): `helper-giano.md` ampliato
+>   con il significato semantico di ogni campo di `cfg` (unità + cosa
+>   rappresenta fisicamente), ripreso da `TSTO/interface_specification.md`
+>   §2 e `TSTO/CLAUDE.md` §8 — nessuna delle due incluse nello zip, quindi
+>   trascritto qui perché resti disponibile a chi ha solo il pacchetto
+>   pubblicato. Nel farlo, corretta anche un'incoerenza residua
+>   nell'esempio (un vecchio valore `Mpayload≈19697 kg`, mai aggiornato
+>   dopo la correzione successiva a `16607.2 kg`, rimasto in un paragrafo
+>   diverso da quello già corretto).
+> - Aggiunto `giano/driver_giano.m` (richiesta utente): stesso esempio di
+>   `helper-giano.md` (caso Falcon 9-like) ma come script eseguibile,
+>   path auto-configurato rispetto alla propria posizione — chi scompatta
+>   la release ha subito qualcosa da lanciare. Eseguito e verificato:
+>   stesso risultato esatto già certificato (`Mpayload=16607.2 kg`,
+>   `feasible=1`, apogeo/perigeo/inclinazione esattamente sul target),
+>   zero differenze filesystem.
+> - Zip di release **ricostruito e ri-pubblicato** sullo stesso tag
+>   `v3.1.0` (asset sostituito, nessun nuovo tag: 0 download registrati
+>   prima della sostituzione, correzioni nella stessa sessione di
+>   pubblicazione) — 81 file, `driver_giano.m` incluso.
 
 ---
 
@@ -443,8 +470,9 @@ Deviazione dallo scaffold di default: cartella `giano/` proposta invece di
 `docs/input/output/source`, motivata da CON-001 e dalla struttura già
 esistente del progetto.
 
-**Comando successivo consigliato**: procedere con il **Gate 9**
-(packaging dello zip di release: `giano.m` + `private/` + `helper-giano.md`
-+ `TSTO/source` "necessario" + `tsto_native.dll` + sorgenti shim MEX +
-`WINDOWS_MEX_BUILD.md`, senza `.mexw64` compilati per decisione già
-presa — contenuto da rivedere insieme prima di allegarlo alla release).
+**Piano completato.** Nessun gate residuo. Punti aperti non bloccanti,
+per riferimento futuro:
+- `.mexw64` reali non compilati (GAP-001): da fare sulla macchina
+  Windows/MATLAB 2026b di destinazione, istruzioni incluse nell'asset.
+- H10 (mapping `x↔other.GUI.*` cablato in `traj_problem.m`): lasciato
+  com'è per decisione utente, non riscritto in forma dati-driven.

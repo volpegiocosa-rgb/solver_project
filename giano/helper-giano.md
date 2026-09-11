@@ -1,11 +1,13 @@
 # helper-giano.md — Manuale utente di `giano.m` v1.0.0
 
-> STATO: implementazione completa (Gate 1-7, rif. `giano-design.md`).
-> Manca solo il packaging dello zip di release e la compilazione dei
-> `.mexw64` su una macchina Windows con MATLAB (nessun MATLAB Windows
-> disponibile in fase di sviluppo) — non necessaria per l'uso: `giano.m`
-> funziona comunque tramite il percorso interpretato Octave/MATLAB, vedi
-> più sotto.
+> STATO: implementazione e release complete (Gate 1-10, rif.
+> `giano-design.md`). Manca solo la compilazione dei `.mexw64` su una
+> macchina Windows con MATLAB (nessun MATLAB Windows disponibile in fase
+> di sviluppo) — non necessaria per l'uso: `giano.m` funziona comunque
+> tramite il percorso interpretato Octave/MATLAB, vedi più sotto.
+>
+> Per provare subito senza scrivere nulla: `giano/driver_giano.m`, incluso
+> nella release, lancia esattamente l'esempio di questo manuale.
 
 ## Cos'è
 
@@ -60,31 +62,116 @@ database, UI, valori letterali).
 
 ### Sub-struct "fisiche" (stesso contenuto dei CSV di `TSTO/input/<dataset>`)
 
-| Sub-struct | Campi | Nota |
+Significato fisico ripreso da `TSTO/interface_specification.md` §2 e
+`TSTO/CLAUDE.md` §8 (non incluse nello zip di release — qui trascritto
+perché resti disponibile a chi usa solo questo manuale).
+
+**`cfg.LV`** — veicolo, valori **per singolo motore** (il codice moltiplica per `n_engine`):
+
+| Campo | Unità | Significato |
 |---|---|---|
-| `cfg.LV` | `Sref Mfairing M0 Minert1 Minert2 MProp1 MProp2 Thrust1 Thrust2 MR1 MR2 Aexit1 Aexit2 n_engine1 n_engine2 Mpayload` | valori per singolo motore; `Mpayload` qui è il nominale, sovrascritto da `cfg.design_variables.Mpayload` |
-| `cfg.ENV` | `Req Rpole f omega_E mu lat lon hpad` | |
-| `cfg.atmosphere` | `altitude PAtm rho Vsound` | vettori colonna, stessa lunghezza |
-| `cfg.aero_ascent` | `Mach AoA Cd` | `Mach`/`AoA` vettori, `Cd` matrice `Cd(Mach,AoA)` |
-| `cfg.GUID` | `AZ timeHS_Sep_control flux_HS_Sep` | |
-| `cfg.GUIDANCE_VARS` | `zkick pitch_over_starting pitch_c1 pitch_c2 transition_starting pitch_rate_transition pitch_at_transition insertion_starting AoA_rate plane_controller_kp plane_controller_kd plane_controller_ki` | baseline "pristine"; `plane_controller_kd/ki` e `pitch_at_transition` NON sono variabili di design e restano fissi a questi valori |
-| `cfg.MIS` | `apogee_altitude_target perigee_altitude_target target_orbital_inclination` | |
+| `Sref` | m² | area di riferimento aerodinamica |
+| `Mfairing` | kg | massa della cuffia (fairing) |
+| `M0` | kg | massa al lift-off, **esclusa** la massa payload |
+| `Minert1`, `Minert2` | kg | massa a secco (struttura) dello stadio 1 / 2 |
+| `MProp1`, `MProp2` | kg | massa di propellente imbarcata sullo stadio 1 / 2 |
+| `Thrust1`, `Thrust2` | N | spinta nel vuoto, per singolo motore, stadio 1 / 2 |
+| `MR1`, `MR2` | kg/s | portata massica, per singolo motore, stadio 1 / 2 |
+| `Aexit1`, `Aexit2` | m² | area di uscita dell'ugello, stadio 1 / 2 |
+| `n_engine1`, `n_engine2` | – | numero di motori accesi, stadio 1 / 2 |
+| `Mpayload` | kg | massa payload **nominale**: sovrascritta da `cfg.design_variables.Mpayload` durante l'ottimizzazione, quindi qui il valore ha poco peso |
+
+**`cfg.ENV`** — ambiente e sito di lancio (costanti WGS84 + geodesia):
+
+| Campo | Unità | Significato |
+|---|---|---|
+| `Req` | m | raggio equatoriale terrestre (ellissoide WGS84) |
+| `Rpole` | m | raggio polare terrestre (WGS84) |
+| `f` | – | schiacciamento dell'ellissoide WGS84 |
+| `omega_E` | rad/s | velocità di rotazione terrestre |
+| `mu` | m³/s² | parametro gravitazionale terrestre (GM) |
+| `lat`, `lon` | rad | latitudine/longitudine del sito di lancio |
+| `hpad` | m | quota del sito di lancio |
+
+**`cfg.atmosphere`** — tabella US Standard Atmosphere 1976 vs quota (vettori colonna, stessa lunghezza, interpolati durante l'integrazione):
+
+| Campo | Unità | Significato |
+|---|---|---|
+| `altitude` | m | quote della tabella (ascissa di interpolazione) |
+| `PAtm` | Pa | pressione atmosferica ambiente |
+| `rho` | kg/m³ | densità atmosferica |
+| `Vsound` | m/s | velocità del suono |
+
+**`cfg.aero_ascent`** — polare aerodinamica di salita, griglia 2D:
+
+| Campo | Significato |
+|---|---|
+| `Mach` | vettore, valori di Mach (righe della griglia) |
+| `AoA` | vettore, angolo d'attacco in **gradi** (colonne della griglia) |
+| `Cd` | matrice `Cd(Mach, AoA)`, coefficiente di resistenza |
+
+**`cfg.GUID`** — parametri di guida non ottimizzati (fissi, non fanno parte della ricerca):
+
+| Campo | Unità | Significato |
+|---|---|---|
+| `AZ` | rad | azimut di lancio |
+| `timeHS_Sep_control` | s | tempo minimo di controllo prima della separazione della cuffia |
+| `flux_HS_Sep` | W/m² | soglia di flusso termico per la separazione della cuffia |
+
+**`cfg.GUIDANCE_VARS`** — baseline "pristine" delle variabili di guida (in **radianti**, a differenza di `cfg.design_variables` sotto che per le stesse grandezze usa i gradi). `plane_controller_kd`/`ki` e `pitch_at_transition` NON sono variabili di ricerca e restano fissi a questi valori per tutta l'ottimizzazione:
+
+| Campo | Unità | Significato |
+|---|---|---|
+| `zkick` | m | quota di fine vertical-rise (trigger della fase 1) |
+| `pitch_over_starting` | s | istante di inizio della manovra di pitch-over (fase 2) |
+| `pitch_c1`, `pitch_c2` | rad/s², rad/s | coefficienti (quadratico, lineare) del profilo di pitch durante il pitch-over |
+| `transition_starting` | s | istante di inizio della transizione al gravity-turn (fase 3) |
+| `pitch_rate_transition` | rad/s | rateo di pitch imposto durante la transizione |
+| `pitch_at_transition` | rad | pitch iniziale all'ingresso della transizione — **fisso**, non è più una variabile di ricerca: coincide per costruzione con l'assetto raggiunto a fine fase 2 |
+| `insertion_starting` | s | istante di inizio della fase di insertion (fase 6) |
+| `AoA_rate` | rad/s | rateo di angolo d'attacco comandato durante l'insertion |
+| `plane_controller_kp`, `_kd`, `_ki` | – | guadagni (proporzionale/derivativo/integrale) del controllore di piano (correzione yaw/plane) |
+
+**`cfg.MIS`** — obiettivi di missione:
+
+| Campo | Unità | Significato |
+|---|---|---|
+| `apogee_altitude_target` | m | quota di apogeo obiettivo (trigger della fase 6) |
+| `perigee_altitude_target` | m | quota di perigeo obiettivo |
+| `target_orbital_inclination` | rad | inclinazione orbitale obiettivo |
 
 ### `cfg.design_variables` — variabili di ricerca
 
 Struct con **esattamente** questi 10 campi (contratto fisso con
-`TSTO/source/traj_problem.m`, accesso per nome):
+`TSTO/source/traj_problem.m`, accesso per nome). Stesso significato
+fisico dei campi omonimi di `cfg.GUIDANCE_VARS` sopra — sono le 9
+variabili di guida che l'ottimizzatore esplora al posto dei valori
+"pristine", più la massa payload (l'obiettivo stesso, `f = -Mpayload`):
 
-```
-zkick, pitch_over_starting, pitch_c1, pitch_c2, transition_starting,
-pitch_rate_transition, insertion_starting, AoA_rate,
-plane_controller_kp, Mpayload
-```
+| Campo | Unità qui (in `cfg.design_variables`) | Significato |
+|---|---|---|
+| `zkick` | m | quota di fine vertical-rise |
+| `pitch_over_starting` | s | istante di inizio del pitch-over |
+| `pitch_c1` | **deg**/s² | coefficiente quadratico del profilo di pitch (in gradi, non radianti — unica differenza rispetto a `cfg.GUIDANCE_VARS`) |
+| `pitch_c2` | **deg**/s | coefficiente lineare del profilo di pitch |
+| `transition_starting` | s | istante di inizio della transizione al gravity-turn |
+| `pitch_rate_transition` | **deg**/s | rateo di pitch durante la transizione |
+| `insertion_starting` | s | istante di inizio dell'insertion |
+| `AoA_rate` | **deg**/s | rateo di angolo d'attacco durante l'insertion |
+| `plane_controller_kp` | – | guadagno proporzionale del controllore di piano |
+| `Mpayload` | kg | massa payload — **è l'obiettivo dell'ottimizzazione** (`f_best = -Mpayload`) |
+
+Le 4 componenti in **gradi** (`pitch_c1`, `pitch_c2`,
+`pitch_rate_transition`, `AoA_rate`) sono l'unica differenza di
+convenzione rispetto a `cfg.GUIDANCE_VARS`/al resto del codice interno
+(radianti): `giano.m` converte automaticamente in base al NOME del
+campo, non serve fare nulla — ma se costruisci `cfg.design_variables` a
+partire da valori che hai in radianti altrove nel tuo programma,
+ricordati di convertirli in gradi prima di passarli qui.
 
 Ciascun campo è una struct con `.x0 .lb .ub` (e opzionalmente `.unit`,
-solo documentale — la conversione gradi→radianti sulle 4 componenti
-angolari, `pitch_c1/pitch_c2/pitch_rate_transition/AoA_rate`, è dedotta
-automaticamente dal NOME del campo, non da `.unit`). Esempio:
+solo documentale — non usato per la conversione, che è sempre dedotta
+dal nome del campo). Esempio:
 
 ```matlab
 cfg.design_variables.zkick = struct('x0', 120, 'lb', 20, 'ub', 180, 'unit', 'm');
@@ -141,8 +228,9 @@ usato per tutta la validazione di questo toolbox — rif.
 `giano-design.md`), qui trascritti come struct invece che letti da CSV.
 In un uso reale, questi valori arriveranno dal tuo programma (CSV,
 database, UI): qui sono letterali solo per rendere l'esempio
-autosufficiente e VERIFICATO (eseguito, non solo scritto: converge a
-`Mpayload≈19697 kg`, `feasible=1`, con budget sufficiente).
+autosufficiente e VERIFICATO (eseguito, non solo scritto — risultato
+esatto più sotto). Lo stesso esempio è eseguibile direttamente come
+script: `giano/driver_giano.m`, incluso nella release.
 
 ```matlab
 cfg = struct();
