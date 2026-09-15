@@ -115,3 +115,57 @@ fprintf('Perigeo raggiunto      = %.1f m   (target %.1f m)\n', ...
     out.RES.thePerigeeAltitude(end), cfg.MIS.perigee_altitude_target);
 fprintf('Inclinazione raggiunta = %.6f rad (target %.6f rad)\n', ...
     out.RES.theInclination(end), cfg.MIS.target_orbital_inclination);
+
+% === plot pitch / AoA / incidence vs tempo, con confini di fase =========
+% Confini di fase presi da theGuidFlag (fonte di verita', non un valore
+% temporale assunto): una linea verticale tratteggiata per ogni cambio di
+% fase, etichettata col numero di fase in cui si entra.
+t     = out.RES.theTimes;
+phase = out.RES.theGuidFlag;
+pitch_deg = rad2deg(out.RES.thePitch);
+aoa_deg   = rad2deg(out.RES.theAOA);
+inc_deg   = rad2deg(out.RES.theIncidence);
+
+phase_change_idx = find([true; diff(phase(:)) ~= 0]);
+
+figure();
+
+% xline() non e' disponibile in Octave (§2 CLAUDE.md: compatibilita'
+% doppia Octave+MATLAB): confini di fase disegnati con line() + text(),
+% funzionano identici su entrambe le piattaforme.
+subplot(3,1,1);
+plot(t, pitch_deg, '-');
+hold on;
+yl = [min(pitch_deg), max(pitch_deg)];
+for k = 1:numel(phase_change_idx)
+    i = phase_change_idx(k);
+    line([t(i) t(i)], yl, 'LineStyle', '--', 'Color', 'k');
+    text(t(i), yl(2), sprintf('%d', phase(i)), 'VerticalAlignment', 'top');
+end
+hold off;
+ylabel('pitch [deg]');
+title('Pitch, AoA, incidence vs tempo (linee tratteggiate = cambio fase, etichetta = fase entrante)');
+grid on;
+
+subplot(3,1,2);
+plot(t, aoa_deg, '-');
+hold on;
+yl = [min(aoa_deg), max(aoa_deg)];
+for k = 1:numel(phase_change_idx)
+    line([t(phase_change_idx(k)) t(phase_change_idx(k))], yl, 'LineStyle', '--', 'Color', 'k');
+end
+hold off;
+ylabel('AoA [deg]');
+grid on;
+
+subplot(3,1,3);
+plot(t, inc_deg, '-');
+hold on;
+yl = [min(inc_deg), max(inc_deg)];
+for k = 1:numel(phase_change_idx)
+    line([t(phase_change_idx(k)) t(phase_change_idx(k))], yl, 'LineStyle', '--', 'Color', 'k');
+end
+hold off;
+xlabel('t [s]');
+ylabel('incidence [deg]');
+grid on;
